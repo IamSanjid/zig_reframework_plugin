@@ -37,7 +37,7 @@ pub const Api = struct {
     lua_mutex: std.Io.Mutex = .init,
 
     const Self = @This();
-    const VerifiedParamInit = VerifiedParam(if (build_options.d3d_renderer != build_options.D3D_NO_RENDERER)
+    const VerifiedParamInit = VerifiedParam(if (build_options.d3d != build_options.D3D_NO_RENDERER)
         .{
             .functions = specs.minimal.functions,
             .renderer_data = .{.renderer_type},

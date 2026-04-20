@@ -19,10 +19,10 @@
 #include "imgui.h"      // IMGUI_IMPL_API
 #ifndef IMGUI_DISABLE
 
-struct ID3D11Device;
-struct ID3D11DeviceContext;
-struct ID3D11SamplerState;
-struct ID3D11Buffer;
+typedef struct ID3D11Device ID3D11Device;
+typedef struct ID3D11DeviceContext ID3D11DeviceContext;
+typedef struct ID3D11SamplerState ID3D11SamplerState;
+typedef struct ID3D11Buffer ID3D11Buffer;
 
 // Follow "Getting Started" link and check examples/ folder to learn about using backends!
 IMGUI_IMPL_API bool     ImGui_ImplDX11_Init(ID3D11Device* device, ID3D11DeviceContext* device_context);

@@ -1,8 +1,9 @@
 const std = @import("std");
 const windows = std.os.windows;
+
 const re = @import("reframework");
 const interop = re.interop;
-const d3d_renderer = re.d3d_renderer;
+const d3d = re.d3d;
 
 const win32 = @import("win32");
 const cimgui = @import("cimgui");
@@ -14,7 +15,8 @@ const State = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     interop_cache: interop.Cache,
-    hwnd: ?win32.foundation.HWND,
+    hwnd: windows.HWND,
+    renderer_type: re.api.RendererType,
 };
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
@@ -210,56 +212,30 @@ fn applyInfiniteAmmoHack() !void {
 }
 
 var imgui_initialized: bool = false;
-var d3d11: d3d_renderer.D3D11 = undefined;
-var d3d12: d3d_renderer.D3D12 = undefined;
+var d3d11: d3d.D3D11 = undefined;
+var d3d12: d3d.D3D12 = undefined;
 
 fn initImGui() !void {
     if (imgui_initialized) return;
-    _ = cimgui.igDebugCheckVersionAndDataLayout(
-        cimgui.igGetVersion(),
-        @sizeOf(cimgui.ImGuiIO),
-        @sizeOf(cimgui.ImGuiStyle),
-        @sizeOf(cimgui.ImVec2),
-        @sizeOf(cimgui.ImVec4),
-        @sizeOf(cimgui.ImDrawVert),
-        @sizeOf(cimgui.ImDrawIdx),
-    );
     _ = cimgui.igCreateContext(null);
     cimgui.igGetIO().*.IniFilename = "re9_basic.ini".ptr;
     const param = try g_state.api.verifiedParam(.{ .renderer_data = .{.renderer_type} });
-    const renderer_type: re.api.RendererType = .fromU32(@intCast(param.safe().renderer_data.safe().renderer_type));
-    std.log.info("Renderer Type: {}", .{renderer_type});
-    switch (renderer_type) {
+
+    g_state.renderer_type = .fromU32(@intCast(param.safe().renderer_data.safe().renderer_type));
+
+    switch (g_state.renderer_type) {
         .d3d11 => {
-            d3d11 = .init(try d3d_renderer.D3D11.VerifiedParam.init(param.native));
-            g_state.hwnd = try d3d11.getHwnd();
-            if (g_state.hwnd) |hwnd| {
-                std.log.info("Got HWND: {p}", .{hwnd});
-                if (imgui_c.ImGui_ImplWin32_Init(hwnd)) {
-                    std.log.info("Initialized ImGui Win32 backend", .{});
-                } else {
-                    std.log.warn("Failed to initialize ImGui Win32 backend", .{});
-                }
-            } else {
-                std.log.warn("Failed to get HWND from D3D11 swapchain, ImGui Win32 backend will not be initialized", .{});
-            }
+            d3d11 = .init(try d3d.D3D11.VerifiedParam.init(param.native));
+            g_state.hwnd = (try d3d11.getHwnd()) orelse return error.GetHwndFailed;
         },
         .d3d12 => {
-            d3d12 = .init(try d3d_renderer.D3D12.VerifiedParam.init(param.native));
-            g_state.hwnd = try d3d12.getHwnd();
-            if (g_state.hwnd) |hwnd| {
-                std.log.info("Got HWND: {p}", .{hwnd});
-                if (imgui_c.ImGui_ImplWin32_Init(hwnd)) {
-                    std.log.info("Initialized ImGui Win32 backend", .{});
-                } else {
-                    std.log.warn("Failed to initialize ImGui Win32 backend", .{});
-                }
-            } else {
-                std.log.warn("Failed to get HWND from D3D12 swapchain, ImGui Win32 backend will not be initialized", .{});
-            }
+            d3d12 = .init(try d3d.D3D12.VerifiedParam.init(param.native));
+            g_state.hwnd = (try d3d12.getHwnd()) orelse return error.GetHwndFailed;
         },
         else => return,
     }
+
+    if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
 
     imgui_initialized = true;
 }
@@ -284,8 +260,29 @@ fn onPresent() void {
     };
 }
 
+extern "c" fn ImGui_ImplWin32_WndProcHandler(
+    hWnd: windows.HWND,
+    msg: windows.UINT,
+    wParam: win32.foundation.WPARAM,
+    lParam: windows.LPARAM,
+) callconv(.c) win32.foundation.LRESULT;
+
+fn onMessage(hwnd: windows.HWND, msg: windows.UINT, wparam: win32.foundation.WPARAM, lparam: windows.LPARAM) bool {
+    _ = ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
+
+    return !cimgui.igGetIO().*.WantCaptureMouse and !cimgui.igGetIO().*.WantCaptureKeyboard;
+}
+
 fn onDeviceReset() void {
     std.log.info("Device reset detected, clearing interop cache", .{});
+
+    imgui_initialized = false;
+    switch (g_state.renderer_type) {
+        .d3d11 => {},
+        .d3d12 => d3d12 = undefined,
+        else => {},
+    }
+
     g_state.interop_cache.deinit();
     threaded.deinit();
     _ = debug_allocator.detectLeaks();
@@ -296,6 +293,7 @@ comptime {
     re.initPlugin(init, .{
         .onPresent = onPresent,
         .onDeviceReset = onDeviceReset,
+        .onMessage = onMessage,
     });
 }
 

@@ -25,6 +25,7 @@
 #include <d3d12.h>      // D3D12_CPU_DESCRIPTOR_HANDLE
 
 // Initialization data, for ImGui_ImplDX12_Init()
+typedef struct ImGui_ImplDX12_InitInfo ImGui_ImplDX12_InitInfo;
 struct ImGui_ImplDX12_InitInfo
 {
     ID3D12Device*               Device;
@@ -44,7 +45,9 @@ struct ImGui_ImplDX12_InitInfo
     D3D12_GPU_DESCRIPTOR_HANDLE LegacySingleSrvGpuDescriptor;
 #endif
 
+#ifdef __cplusplus
     ImGui_ImplDX12_InitInfo()   { memset((void*)this, 0, sizeof(*this)); }
+#endif
 };
 
 // Follow "Getting Started" link and check examples/ folder to learn about using backends!

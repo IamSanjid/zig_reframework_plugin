@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const D3DRenderer = enum(u2) {
+pub const D3D = enum(u2) {
     dx11 = 1,
     dx12,
     /// Compile-time exposure of both backend modules.
@@ -8,13 +8,13 @@ pub const D3DRenderer = enum(u2) {
 };
 
 const ReframeworkConfig = struct {
-    d3d_renderer: ?D3DRenderer = null,
+    d3d: ?D3D = null,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 };
 
 pub fn build(b: *std.Build) void {
-    const d3d_renderer = b.option(D3DRenderer, "d3d_renderer", "Choose which Direct3D renderer surfaces to expose. dx11_dx12 exposes both modules at compile time.");
+    const d3d = b.option(D3D, "d3d", "Choose which Direct3D renderer surfaces to expose. dx11_dx12 exposes both modules at compile time.");
     const target = b.standardTargetOptions(.{
         .whitelist = &.{
             .{
@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const mod = reframework(b, .{
-        .d3d_renderer = d3d_renderer,
+        .d3d = d3d,
         .target = target,
         .optimize = optimize,
     }) orelse return;
@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
                 .{
                     .name = "reframework",
                     .module = reframework(b, .{
-                        .d3d_renderer = .dx11_dx12,
+                        .d3d = .dx11_dx12,
                         .target = target,
                         .optimize = optimize,
                     }) orelse return,
@@ -66,7 +66,7 @@ pub fn build(b: *std.Build) void {
                 .{
                     .name = "reframework",
                     .module = reframework(b, .{
-                        .d3d_renderer = null,
+                        .d3d = null,
                         .target = target,
                         .optimize = optimize,
                     }) orelse return,
@@ -112,11 +112,11 @@ fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
     const build_options = b.addOptions();
     // TODO: Address this when the `std.Build.Options` printing optional Enum types issues has been resolved..
     build_options.addOption(u2, "D3D_NO_RENDERER", 0);
-    build_options.addOption(u2, "D3D_DX11", @intFromEnum(D3DRenderer.dx11));
-    build_options.addOption(u2, "D3D_DX12", @intFromEnum(D3DRenderer.dx12));
-    build_options.addOption(u2, "D3D_DX11_DX12", @intFromEnum(D3DRenderer.dx11_dx12));
+    build_options.addOption(u2, "D3D_DX11", @intFromEnum(D3D.dx11));
+    build_options.addOption(u2, "D3D_DX12", @intFromEnum(D3D.dx12));
+    build_options.addOption(u2, "D3D_DX11_DX12", @intFromEnum(D3D.dx11_dx12));
 
-    if (config.d3d_renderer) |renderer| {
+    if (config.d3d) |renderer| {
         const win32 = (b.lazyDependency("win32", .{}) orelse return null).module("win32");
         win32.resolved_target = config.target;
         win32.optimize = config.optimize;
@@ -137,11 +137,11 @@ fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
                 mod.linkSystemLibrary("d3d12", .{});
             },
         }
-        build_options.addOption(u2, "d3d_renderer", @intFromEnum(renderer));
+        build_options.addOption(u2, "d3d", @intFromEnum(renderer));
         // mod.linkSystemLibrary("user32", .{});
         mod.linkSystemLibrary("d3dcompiler_47", .{});
     } else {
-        build_options.addOption(u2, "d3d_renderer", 0);
+        build_options.addOption(u2, "d3d", 0);
     }
     mod.addOptions("build_options", build_options);
 
@@ -164,7 +164,16 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
         .optimize = optimize,
     }) orelse return;
     const cimgui_conf = cimgui.getConfig(false);
-    const imgui = cimgui_dep.module(cimgui_conf.module_name);
+
+    const imgui_clib = cimgui_dep.artifact(cimgui_conf.clib_name);
+    imgui_clib.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
+
+    const imgui = b.addTranslateC(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = cimgui_dep.path(b.fmt("{s}/cimgui.h", .{cimgui_conf.include_dir})),
+    });
+    imgui.defineCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
 
     const imgui_c = b.addTranslateC(.{
         .optimize = optimize,
@@ -175,13 +184,16 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
     // imgui_c.defineCMacro("IMGUI_IMPL_API", "extern \"C\" __declspec(dllexport)");
     imgui_c.defineCMacro("TRANSLATE_C_DX11", null);
     imgui_c.defineCMacro("TRANSLATE_C_DX12", null);
-    imgui_c.addIncludePath(cimgui_dep.path(cimgui_conf.include_dir));
+    imgui_c.defineCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
+    // imgui_c.addIncludePath(cimgui_dep.path(cimgui_conf.include_dir));
+    // get our custom imgui.h
+    imgui_c.addIncludePath(b.path("src/examples/"));
     imgui_c.addIncludePath(b.path("reframework/src/re2-imgui/"));
 
     const cflags = &.{
         "-fno-sanitize=undefined",
-        // "-Wno-elaborated-enum-base",
-        // "-Wno-error=date-time",
+        "-Wno-elaborated-enum-base",
+        "-Wno-error=date-time",
     };
 
     to.root_module.link_libcpp = target.result.abi != .msvc;
@@ -201,12 +213,11 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
         .language = .cpp,
     });
 
-    imgui.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
-
-    to.root_module.addImport("cimgui", imgui);
+    to.root_module.addImport("cimgui", imgui.createModule());
     to.root_module.addImport("win32", win32);
     to.root_module.addImport("imgui_c", imgui_c.createModule());
 
+    to.root_module.linkLibrary(imgui_clib);
     to.root_module.linkSystemLibrary("gdi32", .{});
     to.root_module.linkSystemLibrary("dwmapi", .{});
 }

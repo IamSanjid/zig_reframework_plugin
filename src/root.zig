@@ -1,9 +1,11 @@
 const std = @import("std");
+const windows = std.os.windows;
+
 pub const build_options = @import("build_options");
 
 pub const API_C = @import("API");
-pub const d3d_renderer = if (build_options.d3d_renderer != build_options.D3D_NO_RENDERER)
-    @import("d3d_renderer.zig")
+pub const d3d = if (build_options.d3d != build_options.D3D_NO_RENDERER)
+    @import("d3d.zig")
 else
     struct {};
 
@@ -44,6 +46,9 @@ pub inline fn initPlugin(
         requiredVersion: PluginVersion = .default,
         onPresent: ?fn () void = null,
         onDeviceReset: ?fn () void = null,
+        onMessage: ?fn (windows.HWND, windows.UINT, usize, windows.LPARAM) bool = null,
+        onImGuiFrame: ?fn (*API_C.REFImGuiFrameCbData) void = null,
+        onImGuiDraw: ?fn (*API_C.REFImGuiFrameCbData) void = null,
     },
 ) void {
     const CWrapped = struct {
@@ -67,6 +72,38 @@ pub inline fn initPlugin(
                     }
                 }.func)) {
                     api_instance.logError("Failed to set onDeviceReset callback!", .{});
+                }
+            }
+
+            if (options.onMessage) |f| {
+                if (!api_instance.param.safe().functions.safe().on_message(&struct {
+                    fn func(hwnd: ?*anyopaque, msg: c_uint, wparam: c_ulonglong, lparam: c_longlong) callconv(.c) bool {
+                        return f(@ptrCast(hwnd), msg, wparam, lparam);
+                    }
+                }.func)) {
+                    api_instance.logError("Failed to set onMessage callback!", .{});
+                }
+            }
+
+            if (options.onImGuiFrame) |f| {
+                if (!api_instance.param.safe().functions.safe().on_imgui_frame(&struct {
+                    fn func(data: [*c]API_C.REFImGuiFrameCbData) callconv(.c) void {
+                        std.debug.assert(data != null);
+                        return f(data);
+                    }
+                }.func)) {
+                    api_instance.logError("Failed to set onImGuiFrame callback!", .{});
+                }
+            }
+
+            if (options.onImGuiDraw) |f| {
+                if (!api_instance.param.safe().functions.safe().on_imgui_draw(&struct {
+                    fn func(data: [*c]API_C.REFImGuiDrawCbData) callconv(.c) void {
+                        std.debug.assert(data != null);
+                        return f(data);
+                    }
+                }.func)) {
+                    api_instance.logError("Failed to set onImGuiDraw callback!", .{});
                 }
             }
 
