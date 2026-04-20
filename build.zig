@@ -1,0 +1,212 @@
+const std = @import("std");
+
+pub const D3DRenderer = enum(u2) {
+    dx11 = 1,
+    dx12,
+    /// Compile-time exposure of both backend modules.
+    dx11_dx12,
+};
+
+const ReframeworkConfig = struct {
+    d3d_renderer: ?D3DRenderer = null,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+};
+
+pub fn build(b: *std.Build) void {
+    const d3d_renderer = b.option(D3DRenderer, "d3d_renderer", "Choose which Direct3D renderer surfaces to expose. dx11_dx12 exposes both modules at compile time.");
+    const target = b.standardTargetOptions(.{
+        .whitelist = &.{
+            .{
+                .os_tag = .windows,
+                .os_version_min = .{ .windows = .win10_19h1 },
+            },
+        },
+        .default_target = .{ .os_tag = .windows },
+    });
+    const optimize = b.standardOptimizeOption(.{});
+
+    const mod = reframework(b, .{
+        .d3d_renderer = d3d_renderer,
+        .target = target,
+        .optimize = optimize,
+    }) orelse return;
+    // simulating `std.Build.addModule`
+    b.modules.put(b.graph.arena, b.dupe("reframework"), mod) catch @panic("OOM");
+
+    const re9_basic_plugin = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "re9_basic",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/re9_basic/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "reframework",
+                    .module = reframework(b, .{
+                        .d3d_renderer = .dx11_dx12,
+                        .target = target,
+                        .optimize = optimize,
+                    }) orelse return,
+                },
+            },
+        }),
+    });
+    addImGuiToExample(b, re9_basic_plugin);
+
+    const re9_additional_save_slots_plugin = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "re9_additional_save_slots",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/re9_additional_save_slots/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "reframework",
+                    .module = reframework(b, .{
+                        .d3d_renderer = null,
+                        .target = target,
+                        .optimize = optimize,
+                    }) orelse return,
+                },
+            },
+        }),
+    });
+
+    b.installArtifact(re9_basic_plugin);
+    _ = re9_additional_save_slots_plugin;
+    // b.installArtifact(re9_additional_save_slots_plugin);
+
+    const mod_tests = b.addTest(.{
+        .root_module = mod,
+    });
+
+    const run_mod_tests = b.addRunArtifact(mod_tests);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_mod_tests.step);
+}
+
+fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
+    const api_translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("reframework/include/reframework/API.h"),
+        .target = config.target,
+        .optimize = config.optimize,
+    });
+
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{
+                .name = "API",
+                .module = api_translate_c.createModule(),
+            },
+        },
+    });
+
+    const build_options = b.addOptions();
+    // TODO: Address this when the `std.Build.Options` printing optional Enum types issues has been resolved..
+    build_options.addOption(u2, "D3D_NO_RENDERER", 0);
+    build_options.addOption(u2, "D3D_DX11", @intFromEnum(D3DRenderer.dx11));
+    build_options.addOption(u2, "D3D_DX12", @intFromEnum(D3DRenderer.dx12));
+    build_options.addOption(u2, "D3D_DX11_DX12", @intFromEnum(D3DRenderer.dx11_dx12));
+
+    if (config.d3d_renderer) |renderer| {
+        const win32 = (b.lazyDependency("win32", .{}) orelse return null).module("win32");
+        win32.resolved_target = config.target;
+        win32.optimize = config.optimize;
+
+        mod.addImport("win32", win32);
+
+        switch (renderer) {
+            .dx11 => {
+                mod.linkSystemLibrary("d3d11", .{});
+                // mod.linkSystemLibrary("d3dcsx");
+            },
+            .dx12 => {
+                mod.linkSystemLibrary("d3d12", .{});
+            },
+            .dx11_dx12 => {
+                mod.linkSystemLibrary("d3d11", .{});
+                // mod.linkSystemLibrary("d3dcsx");
+                mod.linkSystemLibrary("d3d12", .{});
+            },
+        }
+        build_options.addOption(u2, "d3d_renderer", @intFromEnum(renderer));
+        // mod.linkSystemLibrary("user32", .{});
+        mod.linkSystemLibrary("d3dcompiler_47", .{});
+    } else {
+        build_options.addOption(u2, "d3d_renderer", 0);
+    }
+    mod.addOptions("build_options", build_options);
+
+    return mod;
+}
+
+fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
+    const cimgui = @import("cimgui");
+    const target = to.root_module.resolved_target orelse b.standardTargetOptions(.{
+        .default_target = .{ .os_tag = .windows },
+    });
+    const optimize = to.root_module.optimize orelse b.standardOptimizeOption(.{});
+
+    const win32 = (b.lazyDependency("win32", .{}) orelse return).module("win32");
+    win32.resolved_target = target;
+    win32.optimize = optimize;
+
+    const cimgui_dep = b.lazyDependency("cimgui", .{
+        .target = target,
+        .optimize = optimize,
+    }) orelse return;
+    const cimgui_conf = cimgui.getConfig(false);
+    const imgui = cimgui_dep.module(cimgui_conf.module_name);
+
+    const imgui_c = b.addTranslateC(.{
+        .optimize = optimize,
+        .target = target,
+        .root_source_file = b.path("src/examples/imgui_c.h"),
+    });
+    // imgui_c.defineCMacro("IMGUI_API", "__declspec(dllexport)");
+    // imgui_c.defineCMacro("IMGUI_IMPL_API", "extern \"C\" __declspec(dllexport)");
+    imgui_c.defineCMacro("TRANSLATE_C_DX11", null);
+    imgui_c.defineCMacro("TRANSLATE_C_DX12", null);
+    imgui_c.addIncludePath(cimgui_dep.path(cimgui_conf.include_dir));
+    imgui_c.addIncludePath(b.path("reframework/src/re2-imgui/"));
+
+    const cflags = &.{
+        "-fno-sanitize=undefined",
+        // "-Wno-elaborated-enum-base",
+        // "-Wno-error=date-time",
+    };
+
+    to.root_module.link_libcpp = target.result.abi != .msvc;
+    to.root_module.addCMacro("IMGUI_API", "__declspec(dllexport)");
+    to.root_module.addCMacro("IMGUI_IMPL_API", "extern \"C\" __declspec(dllexport)");
+    to.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
+    to.root_module.addIncludePath(cimgui_dep.path(cimgui_conf.include_dir));
+    to.root_module.addIncludePath(b.path("reframework/src/re2-imgui/"));
+    to.root_module.addCSourceFiles(.{
+        .root = b.path("reframework/src/re2-imgui"),
+        .files = &.{
+            "imgui_impl_win32.cpp",
+            "imgui_impl_dx11.cpp",
+            "imgui_impl_dx12.cpp",
+        },
+        .flags = cflags,
+        .language = .cpp,
+    });
+
+    imgui.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
+
+    to.root_module.addImport("cimgui", imgui);
+    to.root_module.addImport("win32", win32);
+    to.root_module.addImport("imgui_c", imgui_c.createModule());
+
+    to.root_module.linkSystemLibrary("gdi32", .{});
+    to.root_module.linkSystemLibrary("dwmapi", .{});
+}
