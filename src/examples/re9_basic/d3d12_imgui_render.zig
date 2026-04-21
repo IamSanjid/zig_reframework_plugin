@@ -14,187 +14,288 @@ const SUCCEEDED = win32.zig.SUCCEEDED;
 const FALSE = win32.zig.FALSE;
 
 const RTV = enum(u32) {
-    backbuffer_0,
+    backbuffer_0 = 0,
     backbuffer_1,
     backbuffer_2,
     backbuffer_3,
+    backbuffer_4,
+    backbuffer_5,
+    backbuffer_6,
+    backbuffer_7,
+    backbuffer_8,
     imgui,
     blank,
     count,
+
+    const backbuffer_last = RTV.backbuffer_8;
 };
 
 const SRV = enum(u32) {
-    imgui_font,
-    imgui,
+    imgui_font_backbuffer,
+    imgui_font_vr,
+    imgui_vr,
     blank,
     count,
 };
 
-const ImGui_ImplDX12_Texture = extern struct {
-    pTextureResource: ?*d3d12.ID3D12Resource,
-    hFontSrvCpuDescHandle: d3d12.D3D12_CPU_DESCRIPTOR_HANDLE,
-    hFontSrvGpuDescHandle: d3d12.D3D12_GPU_DESCRIPTOR_HANDLE,
+// simple recursive mutex implementation for ImGui rendering
+const RecursiveMutex = struct {
+    mutex: std.Io.Mutex = .init,
+    owner_thread_id: std.Thread.Id = 0,
+    recursion_count: usize = 0,
+
+    pub fn lock(self: *RecursiveMutex, io: std.Io) void {
+        const current_thread_id = std.Thread.getCurrentId();
+        if (self.owner_thread_id == current_thread_id) {
+            self.recursion_count += 1;
+            return;
+        }
+
+        self.mutex.lock(io);
+        self.owner_thread_id = current_thread_id;
+        self.recursion_count = 1;
+    }
+
+    pub fn unlock(self: *RecursiveMutex) void {
+        if (self.recursion_count == 0) {
+            return; // Not locked, do nothing
+        }
+
+        self.recursion_count -= 1;
+        if (self.recursion_count == 0) {
+            self.owner_thread_id = 0;
+            self.mutex.unlock();
+        }
+    }
 };
 
-const ImGui_ImplDX12_Data = extern struct {
-    InitInfo: imgui_c.ImGui_ImplDX12_InitInfo,
-    pd3dDevice: ?*d3d12.ID3D12Device,
-    pRootSignature: ?*d3d12.ID3D12RootSignature,
-    pPipelineState: ?*d3d12.ID3D12PipelineState,
-    pCommandQueue: ?*d3d12.ID3D12CommandQueue,
-    commandQueueOwned: bool,
-    RTVFormat: dxgi.common.DXGI_FORMAT,
-    DSVFormat: dxgi.common.DXGI_FORMAT,
-    pd3dSrvDescHeap: ?*d3d12.ID3D12DescriptorHeap,
-    numFramesInFlight: windows.UINT,
-    pFrameResources: ?*anyopaque,
-    frameIndex: windows.UINT,
-    FontTexture: ImGui_ImplDX12_Texture,
-    LegacySingleDescriptorUsed: bool,
+const CommandContext = struct {
+    cmd_allocator: *d3d12.ID3D12CommandAllocator,
+    cmd_list: *d3d12.ID3D12GraphicsCommandList,
+    fence: *d3d12.ID3D12Fence,
+    fence_value: u64 = 0,
+    fence_handle: win32.foundation.HANDLE,
+    mtx: RecursiveMutex = .{},
+    waiting_for_fence: bool = false,
+    has_commands: bool = false,
+
+    const Self = @This();
+
+    fn init(device: *d3d12.ID3D12Device, name: ?[:0]const u16) !Self {
+        var instance: Self = undefined;
+
+        const name_ptr: ?[*:0]const u16 = if (name) |n| n.ptr else null;
+
+        if (FAILED(device.CreateCommandAllocator(
+            .DIRECT,
+            d3d12.IID_ID3D12CommandAllocator,
+            @ptrCast(&instance.cmd_allocator),
+        ))) {
+            return error.CreateCommandAllocatorFailed;
+        }
+        if (FAILED(device.CreateCommandList(
+            0,
+            .DIRECT,
+            instance.cmd_allocator,
+            null, // pipeline state
+            d3d12.IID_ID3D12CommandList,
+            @ptrCast(&instance.cmd_list),
+        ))) {
+            return error.CreateCommandListFailed;
+        }
+
+        _ = instance.cmd_list.ID3D12Object.SetName(name_ptr);
+
+        if (FAILED(device.CreateFence(
+            0,
+            d3d12.D3D12_FENCE_FLAG_NONE,
+            d3d12.IID_ID3D12Fence,
+            @ptrCast(&instance.fence),
+        ))) {
+            return error.CreateFenceFailed;
+        }
+
+        _ = instance.fence.ID3D12Object.SetName(name_ptr);
+        instance.fence_handle = win32.system.threading.CreateEventW(null, FALSE, FALSE, null) orelse return error.CreateEventFailed;
+
+        return instance;
+    }
 };
 
 const state = struct {
     var initialized = false;
     var native: d3d.D3D12 = undefined;
-    var cmd_allocator: *d3d12.ID3D12CommandAllocator = undefined;
-    var cmd_list: *d3d12.ID3D12GraphicsCommandList = undefined;
+    var cmd_ctxs: [@intFromEnum(RTV.backbuffer_last)]CommandContext = undefined;
     var rtv_desc_heap: *d3d12.ID3D12DescriptorHeap = undefined;
     var srv_desc_heap: *d3d12.ID3D12DescriptorHeap = undefined;
-    var rts: [@intFromEnum(RTV.count)]*d3d12.ID3D12Resource = undefined;
-    var rt_width: u64 = 0;
-    var rt_height: u64 = 0;
+    var rts: [@intFromEnum(RTV.count)]?*d3d12.ID3D12Resource = undefined;
+    var rt_width: u32 = 0;
+    var rt_height: u32 = 0;
+    var imgui_backend_datas: [2]?*anyopaque = undefined;
 };
+
+const log = std.log.scoped(.d3dd12_renderer);
 
 pub fn init(param: d3d.D3D12.VerifiedParam) !void {
     if (state.initialized) return;
-
     state.native = .init(param);
 
-    if (FAILED(state.native.device.CreateCommandAllocator(.DIRECT, d3d12.IID_ID3D12CommandAllocator, @ptrCast(&state.cmd_allocator)))) {
-        return error.CreateCommandAllocatorFailed;
-    }
-    errdefer _ = state.cmd_allocator.IUnknown.Release();
+    const device = state.native.device;
 
-    if (FAILED(state.native.device.CreateCommandList(0, .DIRECT, state.cmd_allocator, null, d3d12.IID_ID3D12CommandList, @ptrCast(&state.cmd_list)))) {
-        return error.CreateCommandListFailed;
-    }
-    errdefer _ = state.cmd_list.IUnknown.Release();
-
-    if (FAILED(state.cmd_list.Close())) {
-        return error.CloseCommandListFailed;
+    for (&state.cmd_ctxs) |*cmd_ctx| {
+        cmd_ctx.* = try CommandContext.init(device, std.unicode.utf8ToUtf16LeStringLiteral("Plugin::d3d12_renderer.cmd_ctx"));
     }
 
     {
-        const desc = d3d12.D3D12_DESCRIPTOR_HEAP_DESC{
-            .Type = .RTV,
-            .NumDescriptors = @intFromEnum(RTV.count),
-            .Flags = .{},
-            .NodeMask = 1,
-        };
-        if (FAILED(state.native.device.CreateDescriptorHeap(&desc, d3d12.IID_ID3D12DescriptorHeap, @ptrCast(&state.rtv_desc_heap)))) {
-            return error.CreateRtvDescriptorHeapFailed;
+        log.info("Creating RTV descriptor heap...", .{});
+        var desc: d3d12.D3D12_DESCRIPTOR_HEAP_DESC = std.mem.zeroes(d3d12.D3D12_DESCRIPTOR_HEAP_DESC);
+        desc.Type = .RTV;
+        desc.NumDescriptors = @intFromEnum(RTV.count);
+        desc.Flags = .{};
+        desc.NodeMask = 1;
+
+        if (FAILED(device.CreateDescriptorHeap(&desc, d3d12.IID_ID3D12DescriptorHeap, @ptrCast(&state.rtv_desc_heap)))) {
+            return error.CreateRTVDescriptorHeapFailed;
         }
+
+        _ = state.rtv_desc_heap.ID3D12Object.SetName(std.unicode.utf8ToUtf16LeStringLiteral("Plugin::d3d12_renderer.rtv_desc_heap"));
     }
-    errdefer _ = state.rtv_desc_heap.IUnknown.Release();
 
     {
-        const desc = d3d12.D3D12_DESCRIPTOR_HEAP_DESC{
-            .Type = .CBV_SRV_UAV,
-            .NumDescriptors = @intFromEnum(SRV.count),
-            .Flags = .{ .SHADER_VISIBLE = 1 },
-            .NodeMask = 0,
-        };
-        if (FAILED(state.native.device.CreateDescriptorHeap(&desc, d3d12.IID_ID3D12DescriptorHeap, @ptrCast(&state.srv_desc_heap)))) {
-            return error.CreateSrvDescriptorHeapFailed;
+        log.info("Creating SRV descriptor heap...", .{});
+        var desc: d3d12.D3D12_DESCRIPTOR_HEAP_DESC = std.mem.zeroes(d3d12.D3D12_DESCRIPTOR_HEAP_DESC);
+        desc.Type = .CBV_SRV_UAV;
+        desc.NumDescriptors = @intFromEnum(SRV.count);
+        desc.Flags = .{ .SHADER_VISIBLE = 1 };
+
+        if (FAILED(device.CreateDescriptorHeap(&desc, d3d12.IID_ID3D12DescriptorHeap, @ptrCast(&state.srv_desc_heap)))) {
+            return error.CreateSRVDescriptorHeapFailed;
         }
-    }
-    errdefer _ = state.srv_desc_heap.IUnknown.Release();
 
-    for (0..@intFromEnum(RTV.backbuffer_3) + 1) |i| {
-        if (SUCCEEDED(state.native.swapchain.IDXGISwapChain.GetBuffer(@truncate(i), d3d12.IID_ID3D12Resource, @ptrCast(&state.rts[i])))) {
-            state.native.device.CreateRenderTargetView(state.rts[i], null, getCpuRtv(state.native.device, @enumFromInt(i)));
+        _ = state.srv_desc_heap.ID3D12Object.SetName(std.unicode.utf8ToUtf16LeStringLiteral("Plugin::d3d12_renderer.srv_desc_heap"));
+    }
+
+    log.info("Creating render targets...", .{});
+
+    const swapchain = state.native.swapchain;
+
+    var swapchain_desc: dxgi.DXGI_SWAP_CHAIN_DESC = std.mem.zeroes(dxgi.DXGI_SWAP_CHAIN_DESC);
+    if (FAILED(swapchain.IDXGISwapChain.GetDesc(&swapchain_desc))) {
+        return error.GetSwapChainDescFailed;
+    }
+
+    log.info("Swapchain buffer count: {d}", .{swapchain_desc.BufferCount});
+
+    {
+        // Create back buffer rtvs.
+        if (swapchain_desc.BufferCount > @intFromEnum(RTV.backbuffer_last) + 1) {
+            log.warn("Too many back buffers ({} vs {})", .{ swapchain_desc.BufferCount, @intFromEnum(RTV.backbuffer_last) + 1 });
         }
+
+        for (0..swapchain_desc.BufferCount) |i| {
+            if (SUCCEEDED(swapchain.IDXGISwapChain.GetBuffer(@truncate(i), d3d12.IID_ID3D12Resource, @ptrCast(&state.rts[i])))) {
+                device.CreateRenderTargetView(state.rts[i], null, getCpuRtv(device, @enumFromInt(i)));
+            } else {
+                log.err("Failed to get back buffer for rtv {}", .{i});
+            }
+        }
+
+        const backbuffer = &state.rts[@intFromEnum(RTV.backbuffer_0)];
+        if (backbuffer.* == null) {
+            // TODO: deinit previously created resources
+            return error.GetFirstBackBufferFailed;
+        }
+
+        const desc = backbuffer.*.?.GetDesc();
+
+        log.info("Back buffer format: {}", .{desc.Format});
+
+        var props: d3d12.D3D12_HEAP_PROPERTIES = std.mem.zeroes(d3d12.D3D12_HEAP_PROPERTIES);
+        props.Type = .DEFAULT;
+        props.CPUPageProperty = .UNKNOWN;
+        props.MemoryPoolPreference = .UNKNOWN;
+
+        var d3d12_rt_desc = desc;
+        d3d12_rt_desc.Format = .R8G8B8A8_UNORM; // for imgui rendering
+
+        var clear_value: d3d12.D3D12_CLEAR_VALUE = std.mem.zeroes(d3d12.D3D12_CLEAR_VALUE);
+        clear_value.Format = d3d12_rt_desc.Format;
+
+        if (FAILED(device.CreateCommittedResource(
+            &props,
+            .{},
+            &d3d12_rt_desc,
+            .{ .PIXEL_SHADER_RESOURCE = 1 },
+            &clear_value,
+            d3d12.IID_ID3D12Resource,
+            @ptrCast(&state.rts[@intFromEnum(RTV.imgui)]),
+        ))) {
+            return error.CreateImGuiRenderTargetFailed;
+        }
+
+        if (FAILED(device.CreateCommittedResource(
+            &props,
+            .{},
+            &d3d12_rt_desc,
+            .{ .PIXEL_SHADER_RESOURCE = 1 },
+            &clear_value,
+            d3d12.IID_ID3D12Resource,
+            @ptrCast(&state.rts[@intFromEnum(RTV.blank)]),
+        ))) {
+            return error.CreateBlankRenderTargetFailed;
+        }
+
+        _ = state.rts[@intFromEnum(RTV.blank)].?.ID3D12Object.SetName(std.unicode.utf8ToUtf16LeStringLiteral("Plugin::d3d12_renderer.rts[BLANK]"));
+
+        device.CreateRenderTargetView(state.rts[@intFromEnum(RTV.imgui)].?, null, getCpuRtv(device, .imgui));
+        device.CreateRenderTargetView(state.rts[@intFromEnum(RTV.blank)].?, null, getCpuRtv(device, .blank));
+        device.CreateShaderResourceView(state.rts[@intFromEnum(RTV.imgui)].?, null, getCpuSrv(device, .imgui_vr));
+        device.CreateShaderResourceView(state.rts[@intFromEnum(RTV.blank)].?, null, getCpuSrv(device, .blank));
+
+        state.rt_height = desc.Height;
+        state.rt_width = @truncate(desc.Width);
     }
 
-    // create our imgui and blank rts
-    const desc = getRt(.backbuffer_0).GetDesc();
+    log.info("Initializing ImGui...", .{});
 
-    const props = d3d12.D3D12_HEAP_PROPERTIES{
-        .Type = .DEFAULT,
-        .CPUPageProperty = .UNKNOWN,
-        .MemoryPoolPreference = .UNKNOWN,
-        .CreationNodeMask = 0,
-        .VisibleNodeMask = 0,
-    };
+    const bb = state.rts[@intFromEnum(RTV.backbuffer_0)].?;
+    const bb_desc = bb.GetDesc();
 
-    const clear_value = d3d12.D3D12_CLEAR_VALUE{
-        .Format = desc.Format,
-        .Anonymous = .{
-            .Color = .{ 0.0, 0.0, 0.0, 0.0 },
-        },
-    };
+    var init_info: imgui_c.ImGui_ImplDX12_InitInfo = std.mem.zeroes(imgui_c.ImGui_ImplDX12_InitInfo);
+    init_info.Device = @ptrCast(device);
+    init_info.CommandQueue = @ptrCast(state.native.queue);
+    init_info.NumFramesInFlight = @intCast(swapchain_desc.BufferCount);
+    init_info.RTVFormat = @intFromEnum(bb_desc.Format);
+    init_info.DSVFormat = @intFromEnum(dxgi.common.DXGI_FORMAT_UNKNOWN);
+    init_info.SrvDescriptorHeap = @ptrCast(state.srv_desc_heap);
+    init_info.LegacySingleSrvCpuDescriptor = .{ .ptr = getCpuSrv(device, .imgui_font_backbuffer).ptr };
+    init_info.LegacySingleSrvGpuDescriptor = .{ .ptr = getGpuSrv(device, .imgui_font_backbuffer).ptr };
 
-    if (FAILED(state.native.device.CreateCommittedResource(
-        &props,
-        .{},
-        &desc,
-        .{ .PIXEL_SHADER_RESOURCE = 1 },
-        &clear_value,
-        d3d12.IID_ID3D12Resource,
-        @ptrCast(@constCast(&getRt(.imgui))),
-    ))) {
-        return error.CreateImguiRtFailed;
-    }
-    errdefer _ = getRt(.imgui).IUnknown.Release();
-
-    if (FAILED(state.native.device.CreateCommittedResource(
-        &props,
-        .{},
-        &desc,
-        .{ .PIXEL_SHADER_RESOURCE = 1 },
-        &clear_value,
-        d3d12.IID_ID3D12Resource,
-        @ptrCast(@constCast(&getRt(.blank))),
-    ))) {
-        return error.CreateBlankRtFailed;
-    }
-    errdefer _ = getRt(.blank).IUnknown.Release();
-
-    // Create imgui and blank rtvs and srvs.
-    state.native.device.CreateRenderTargetView(getRt(.imgui), null, getCpuRtv(state.native.device, .imgui));
-    state.native.device.CreateRenderTargetView(getRt(.blank), null, getCpuRtv(state.native.device, .blank));
-    state.native.device.CreateShaderResourceView(getRt(.imgui), null, getCpuSrv(state.native.device, .imgui));
-    state.native.device.CreateShaderResourceView(getRt(.blank), null, getCpuSrv(state.native.device, .blank));
-
-    state.rt_width = desc.Width;
-    state.rt_height = desc.Height;
-
-    var init_info: imgui_c.ImGui_ImplDX12_InitInfo = .{
-        .Device = @ptrCast(state.native.device),
-        .CommandQueue = @ptrCast(state.native.queue),
-        .NumFramesInFlight = 1,
-        .RTVFormat = @intFromEnum(dxgi.common.DXGI_FORMAT_R8G8B8A8_UNORM),
-        .SrvDescriptorHeap = @ptrCast(state.srv_desc_heap),
-        .LegacySingleSrvCpuDescriptor = .{ .ptr = getCpuSrv(state.native.device, .imgui_font).ptr },
-        .LegacySingleSrvGpuDescriptor = .{ .ptr = getGpuSrv(state.native.device, .imgui_font).ptr },
-    };
     if (!imgui_c.ImGui_ImplDX12_Init(&init_info)) {
-        return error.ImGuiImplDx12InitFailed;
+        return error.ImGuiInitFailed;
     }
 
-    // if (!imgui_c.ImGui_ImplDX12_InitLegacy(
-    //     @ptrCast(state.native.device),
-    //     1,
-    //     @intFromEnum(dxgi.common.DXGI_FORMAT_R8G8B8A8_UNORM),
-    //     @ptrCast(state.srv_desc_heap),
-    //     .{ .ptr = getCpuSrv(state.native.device, .imgui_font).ptr },
-    //     .{ .ptr = getGpuSrv(state.native.device, .imgui_font).ptr },
-    // )) {
-    //     return error.ImGuiImplDx12InitFailed;
-    // }
-    const bd: *ImGui_ImplDX12_Data = @ptrCast(@alignCast(cimgui.igGetIO().*.BackendRendererUserData));
-    bd.*.commandQueueOwned = false;
-    cimgui.igGetIO().*.BackendFlags &= ~cimgui.ImGuiBackendFlags_RendererHasTextures;
+    state.imgui_backend_datas[0] = cimgui.igGetIO().*.BackendRendererUserData;
+
+    cimgui.igGetIO().*.BackendRendererUserData = null;
+
+    init_info = std.mem.zeroes(imgui_c.ImGui_ImplDX12_InitInfo);
+    init_info.Device = @ptrCast(device);
+    init_info.CommandQueue = @ptrCast(state.native.queue);
+    init_info.NumFramesInFlight = @intCast(swapchain_desc.BufferCount);
+    init_info.RTVFormat = @intFromEnum(bb_desc.Format);
+    init_info.DSVFormat = @intFromEnum(dxgi.common.DXGI_FORMAT_UNKNOWN);
+    init_info.SrvDescriptorHeap = @ptrCast(state.srv_desc_heap);
+    init_info.LegacySingleSrvCpuDescriptor = .{ .ptr = getCpuSrv(device, .imgui_font_vr).ptr };
+    init_info.LegacySingleSrvGpuDescriptor = .{ .ptr = getGpuSrv(device, .imgui_font_vr).ptr };
+
+    if (!imgui_c.ImGui_ImplDX12_Init(&init_info)) {
+        return error.ImGuiVRInitFailed;
+    }
+
+    state.imgui_backend_datas[1] = cimgui.igGetIO().*.BackendRendererUserData;
+
+    log.info("Plugin D3D12 for ImGui Initialized!", .{});
 
     state.initialized = true;
 }
@@ -202,19 +303,14 @@ pub fn init(param: d3d.D3D12.VerifiedParam) !void {
 pub fn deinit() void {
     if (!state.initialized) return;
 
-    _ = getRt(.blank).IUnknown.Release();
-    _ = getRt(.imgui).IUnknown.Release();
-    _ = state.srv_desc_heap.IUnknown.Release();
-    _ = state.rtv_desc_heap.IUnknown.Release();
-    _ = state.cmd_list.IUnknown.Release();
-    _ = state.cmd_allocator.IUnknown.Release();
-
     state.initialized = false;
 }
 
-pub fn renderImGui(param: d3d.D3D12.VerifiedParam) !void {
+pub fn updateNative(param: d3d.D3D12.VerifiedParam) void {
     if (!state.initialized) return;
+
     const new_native = d3d.D3D12.init(param);
+
     if (new_native.device != state.native.device) {
         std.log.warn("D3D12 device was different", .{});
     }
@@ -224,79 +320,30 @@ pub fn renderImGui(param: d3d.D3D12.VerifiedParam) !void {
     if (new_native.queue != state.native.queue) {
         std.log.warn("D3D12 Command Queue was different", .{});
     }
+
     state.native = new_native;
-
-    const bd: *ImGui_ImplDX12_Data = @ptrCast(@alignCast(cimgui.igGetIO().*.BackendRendererUserData));
-    bd.*.pCommandQueue = @ptrCast(state.native.queue);
-
-    _ = state.cmd_allocator.Reset();
-    _ = state.cmd_list.Reset(state.cmd_allocator, null);
-
-    // Draw to our render target
-    var barier = d3d12.D3D12_RESOURCE_BARRIER{
-        .Type = .TRANSITION,
-        .Flags = .{},
-        .Anonymous = .{
-            .Transition = .{
-                .pResource = getRt(.imgui),
-                .StateBefore = .{ .PIXEL_SHADER_RESOURCE = 1 },
-                .StateAfter = .{ .RENDER_TARGET = 1 },
-                .Subresource = d3d12.D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-            },
-        },
-    };
-    state.cmd_list.ResourceBarrier(1, @ptrCast(&barier));
-
-    const clear_color: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
-    const device = state.native.device;
-    const empty_rect: []win32.foundation.RECT = &.{};
-    state.cmd_list.ClearRenderTargetView(getCpuRtv(device, .imgui), &clear_color[0], 0, empty_rect.ptr);
-    var rts = [1]d3d12.D3D12_CPU_DESCRIPTOR_HANDLE{
-        getCpuRtv(device, .imgui),
-    };
-    state.cmd_list.OMSetRenderTargets(1, &rts[0], FALSE, null);
-    state.cmd_list.SetDescriptorHeaps(1, @ptrCast(&state.srv_desc_heap));
-    imgui_c.ImGui_ImplDX12_RenderDrawData(@ptrCast(cimgui.igGetDrawData()), @ptrCast(state.cmd_list));
-    barier.Anonymous.Transition.StateBefore = .{ .RENDER_TARGET = 1 };
-    barier.Anonymous.Transition.StateAfter = .{ .PIXEL_SHADER_RESOURCE = 1 };
-    state.cmd_list.ResourceBarrier(1, @ptrCast(&barier));
-
-    // Draw to the backbuffer
-    const swapchain = state.native.swapchain;
-    const bb_index = swapchain.GetCurrentBackBufferIndex();
-    barier.Anonymous.Transition.pResource = getRt(@enumFromInt(bb_index));
-    barier.Anonymous.Transition.StateBefore = d3d12.D3D12_RESOURCE_STATE_PRESENT;
-    barier.Anonymous.Transition.StateAfter = .{ .RENDER_TARGET = 1 };
-    state.cmd_list.ResourceBarrier(1, @ptrCast(&barier));
-    rts[0] = getCpuRtv(device, @enumFromInt(bb_index));
-    state.cmd_list.OMSetRenderTargets(1, &rts[0], FALSE, null);
-    state.cmd_list.SetDescriptorHeaps(1, @ptrCast(&state.srv_desc_heap));
-    imgui_c.ImGui_ImplDX12_RenderDrawData(@ptrCast(cimgui.igGetDrawData()), @ptrCast(state.cmd_list));
-    barier.Anonymous.Transition.StateBefore = .{ .RENDER_TARGET = 1 };
-    barier.Anonymous.Transition.StateAfter = d3d12.D3D12_RESOURCE_STATE_PRESENT;
-    state.cmd_list.ResourceBarrier(1, @ptrCast(&barier));
-    _ = state.cmd_list.Close();
-
-    state.native.queue.ExecuteCommandLists(1, @ptrCast(&state.cmd_list));
 }
 
-inline fn getRt(rtv: RTV) *d3d12.ID3D12Resource {
-    return state.rts[@intFromEnum(rtv)];
+pub fn renderImGui() !void {
+    if (!state.initialized) return;
 }
 
 fn getCpuRtv(device: *d3d12.ID3D12Device, rtv: RTV) d3d12.D3D12_CPU_DESCRIPTOR_HANDLE {
-    return .{ .ptr = state.rtv_desc_heap.GetCPUDescriptorHandleForHeapStart().ptr +
-        @intFromEnum(rtv) * device.GetDescriptorHandleIncrementSize(.RTV) };
+    const base = state.rtv_desc_heap.GetCPUDescriptorHandleForHeapStart();
+    const increment = device.GetDescriptorHandleIncrementSize(.RTV);
+    return .{ .ptr = base.ptr + @as(u64, @intCast(@intFromEnum(rtv))) * @as(u64, @intCast(increment)) };
 }
 
 fn getCpuSrv(device: *d3d12.ID3D12Device, srv: SRV) d3d12.D3D12_CPU_DESCRIPTOR_HANDLE {
-    return .{ .ptr = state.srv_desc_heap.GetCPUDescriptorHandleForHeapStart().ptr +
-        @intFromEnum(srv) * device.GetDescriptorHandleIncrementSize(.CBV_SRV_UAV) };
+    const base = state.srv_desc_heap.GetCPUDescriptorHandleForHeapStart();
+    const increment = device.GetDescriptorHandleIncrementSize(.CBV_SRV_UAV);
+    return .{ .ptr = base.ptr + @as(u64, @intCast(@intFromEnum(srv))) * @as(u64, @intCast(increment)) };
 }
 
 fn getGpuSrv(device: *d3d12.ID3D12Device, srv: SRV) d3d12.D3D12_GPU_DESCRIPTOR_HANDLE {
-    return .{ .ptr = state.srv_desc_heap.GetGPUDescriptorHandleForHeapStart().ptr +
-        @intFromEnum(srv) * device.GetDescriptorHandleIncrementSize(.CBV_SRV_UAV) };
+    const base = state.srv_desc_heap.GetGPUDescriptorHandleForHeapStart();
+    const increment = device.GetDescriptorHandleIncrementSize(.CBV_SRV_UAV);
+    return .{ .ptr = base.ptr + @as(u64, @intCast(@intFromEnum(srv))) * @as(u64, @intCast(increment)) };
 }
 
 test {

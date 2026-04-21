@@ -25,7 +25,7 @@ pub fn pluginLog(
 ) void {
     const log_msg = std.fmt.allocPrintSentinel(
         g_state.allocator,
-        format ++ if (scope != .default) ("(" ++ @tagName(scope) ++ ")") else "",
+        (if (scope != .default) ("(" ++ @tagName(scope) ++ "): ") else "") ++ format,
         args,
         0,
     ) catch return;

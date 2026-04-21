@@ -32,7 +32,7 @@ pub fn pluginLog(
 ) void {
     const log_msg = std.fmt.allocPrintSentinel(
         g_state.allocator,
-        format ++ if (scope != .default) ("(" ++ @tagName(scope) ++ ")") else "",
+        (if (scope != .default) ("(" ++ @tagName(scope) ++ "): ") else "") ++ format,
         args,
         0,
     ) catch return;
@@ -216,9 +216,14 @@ var imgui_initialized: bool = false;
 var d3d11: d3d.D3D11 = undefined;
 var d3d12: d3d.D3D12 = undefined;
 
+export fn print_win_error_code(msg: [*:0]const u8, res: win32.foundation.HRESULT) callconv(.c) void {
+    @setRuntimeSafety(false);
+    std.log.err("{s}: 0x{x}", .{ msg, @as(u32, @intCast(res)) });
+}
+
 fn initImGui() !void {
     if (imgui_initialized) return;
-    _ = cimgui.igCreateContext(null);
+    if (cimgui.igCreateContext(null) == null) return error.ImGuiCreateContextFailed;
     cimgui.igGetIO().*.IniFilename = "re9_basic.ini".ptr;
     const param = try g_state.api.verifiedParam(.{ .renderer_data = .{.renderer_type} });
 
@@ -228,17 +233,17 @@ fn initImGui() !void {
         .d3d11 => {
             d3d11 = .init(try d3d.D3D11.VerifiedParam.init(param.native));
             g_state.hwnd = (try d3d11.getHwnd()) orelse return error.GetHwndFailed;
+            if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
         },
         .d3d12 => {
             const d3d12_param = try d3d.D3D12.VerifiedParam.init(param.native);
             d3d12 = .init(d3d12_param);
             g_state.hwnd = (try d3d12.getHwnd()) orelse return error.GetHwndFailed;
+            if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
             try d3d12_imgui_render.init(d3d12_param);
         },
         else => return,
     }
-
-    if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
 
     imgui_initialized = true;
 }
@@ -260,19 +265,21 @@ fn newFrame() !void {
     }
 
     if (g_state.renderer_type == .d3d12) {
-        imgui_c.ImGui_ImplDX12_NewFrame();
-        imgui_c.ImGui_ImplWin32_NewFrame();
+        d3d12_imgui_render.updateNative(try d3d.D3D12.VerifiedParam.init(g_state.api.param.native));
 
-        cimgui.igNewFrame();
+        // imgui_c.ImGui_ImplDX12_NewFrame();
+        // imgui_c.ImGui_ImplWin32_NewFrame();
 
-        if (show_demo_window) {
-            cimgui.igShowDemoWindow(&show_demo_window);
-        }
+        // cimgui.igNewFrame();
 
-        cimgui.igEndFrame();
-        cimgui.igRender();
+        // if (show_demo_window) {
+        //     cimgui.igShowDemoWindow(&show_demo_window);
+        // }
 
-        try d3d12_imgui_render.renderImGui(try d3d.D3D12.VerifiedParam.init(g_state.api.param.native));
+        // cimgui.igEndFrame();
+        // cimgui.igRender();
+
+        // try d3d12_imgui_render.renderImGui();
     }
 }
 
