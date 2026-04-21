@@ -38,53 +38,26 @@ const SRV = enum(u32) {
     count,
 };
 
-// simple recursive mutex implementation for ImGui rendering
-const RecursiveMutex = struct {
-    mutex: std.Io.Mutex = .init,
-    owner_thread_id: std.Thread.Id = 0,
-    recursion_count: usize = 0,
-
-    pub fn lock(self: *RecursiveMutex, io: std.Io) void {
-        const current_thread_id = std.Thread.getCurrentId();
-        if (self.owner_thread_id == current_thread_id) {
-            self.recursion_count += 1;
-            return;
-        }
-
-        self.mutex.lock(io);
-        self.owner_thread_id = current_thread_id;
-        self.recursion_count = 1;
-    }
-
-    pub fn unlock(self: *RecursiveMutex) void {
-        if (self.recursion_count == 0) {
-            return; // Not locked, do nothing
-        }
-
-        self.recursion_count -= 1;
-        if (self.recursion_count == 0) {
-            self.owner_thread_id = 0;
-            self.mutex.unlock();
-        }
-    }
-};
+// 1-to-1: https://github.com/praydog/REFramework/blob/0a74333ac76774884724bbac2ad7fefba702b6a3/src/REFramework.cpp#L965
 
 const CommandContext = struct {
     cmd_allocator: *d3d12.ID3D12CommandAllocator,
     cmd_list: *d3d12.ID3D12GraphicsCommandList,
     fence: *d3d12.ID3D12Fence,
     fence_value: u64 = 0,
-    fence_handle: win32.foundation.HANDLE,
-    mtx: RecursiveMutex = .{},
+    fence_event: win32.foundation.HANDLE,
     waiting_for_fence: bool = false,
     has_commands: bool = false,
 
     const Self = @This();
 
-    fn init(device: *d3d12.ID3D12Device, name: ?[:0]const u16) !Self {
-        var instance: Self = undefined;
-
-        const name_ptr: ?[*:0]const u16 = if (name) |n| n.ptr else null;
+    fn init(device: *d3d12.ID3D12Device, name: [:0]const u16) !Self {
+        var instance: Self = .{
+            .cmd_allocator = undefined,
+            .cmd_list = undefined,
+            .fence = undefined,
+            .fence_event = undefined,
+        };
 
         if (FAILED(device.CreateCommandAllocator(
             .DIRECT,
@@ -98,13 +71,13 @@ const CommandContext = struct {
             .DIRECT,
             instance.cmd_allocator,
             null, // pipeline state
-            d3d12.IID_ID3D12CommandList,
+            d3d12.IID_ID3D12GraphicsCommandList,
             @ptrCast(&instance.cmd_list),
         ))) {
             return error.CreateCommandListFailed;
         }
 
-        _ = instance.cmd_list.ID3D12Object.SetName(name_ptr);
+        _ = instance.cmd_list.ID3D12Object.SetName(name.ptr);
 
         if (FAILED(device.CreateFence(
             0,
@@ -115,35 +88,96 @@ const CommandContext = struct {
             return error.CreateFenceFailed;
         }
 
-        _ = instance.fence.ID3D12Object.SetName(name_ptr);
-        instance.fence_handle = win32.system.threading.CreateEventW(null, FALSE, FALSE, null) orelse return error.CreateEventFailed;
+        _ = instance.fence.ID3D12Object.SetName(name.ptr);
+        instance.fence_event = win32.system.threading.CreateEventW(null, FALSE, FALSE, null) orelse return error.CreateEventFailed;
 
         return instance;
     }
+
+    pub fn deinit(self: *Self) void {
+        self.wait(2000);
+        _ = self.cmd_list.IUnknown.Release();
+        _ = self.cmd_allocator.IUnknown.Release();
+        _ = self.fence.IUnknown.Release();
+        _ = win32.foundation.CloseHandle(self.fence_event);
+
+        self.* = undefined;
+    }
+
+    pub fn wait(self: *Self, ms: u32) void {
+        if (self.waiting_for_fence) {
+            _ = win32.system.threading.WaitForSingleObject(self.fence_event, ms);
+            _ = win32.system.threading.ResetEvent(self.fence_event);
+            self.waiting_for_fence = false;
+            if (FAILED(self.cmd_allocator.Reset())) {
+                log.err("Failed to reset command allocator.", .{});
+                return;
+            }
+            if (FAILED(self.cmd_list.Reset(self.cmd_allocator, null))) {
+                log.err("Failed to reset command list.", .{});
+                return;
+            }
+            self.has_commands = false;
+        }
+    }
+
+    pub fn execute(self: *Self, command_queue: *d3d12.ID3D12CommandQueue) !void {
+        if (!self.has_commands) return;
+
+        if (FAILED(self.cmd_list.Close())) {
+            return error.CloseCommandListFailed;
+        }
+
+        var cmd_lists: [1]*d3d12.ID3D12CommandList = undefined;
+        cmd_lists[0] = @ptrCast(self.cmd_list);
+        command_queue.ExecuteCommandLists(1, @ptrCast(&cmd_lists[0]));
+
+        self.fence_value += 1;
+        _ = command_queue.Signal(self.fence, self.fence_value);
+        _ = self.fence.SetEventOnCompletion(self.fence_value, self.fence_event);
+
+        self.waiting_for_fence = true;
+        self.has_commands = false;
+    }
+};
+
+pub const g_state = struct {
+    // TODO: Do we really need mutex? Don't know if on_present will be called from different threads...?
+    pub var io: ?std.Io = null;
+    pub var mtx: std.Io.Mutex = .init;
 };
 
 const state = struct {
     var initialized = false;
     var native: d3d.D3D12 = undefined;
     var cmd_ctxs: [@intFromEnum(RTV.backbuffer_last)]CommandContext = undefined;
+    var cmd_ctx_index: usize = 0;
     var rtv_desc_heap: *d3d12.ID3D12DescriptorHeap = undefined;
     var srv_desc_heap: *d3d12.ID3D12DescriptorHeap = undefined;
     var rts: [@intFromEnum(RTV.count)]?*d3d12.ID3D12Resource = undefined;
     var rt_width: u32 = 0;
     var rt_height: u32 = 0;
-    var imgui_backend_datas: [2]?*anyopaque = undefined;
 };
 
 const log = std.log.scoped(.d3dd12_renderer);
 
 pub fn init(param: d3d.D3D12.VerifiedParam) !void {
+    try g_state.mtx.lock(g_state.io.?);
+    defer g_state.mtx.unlock(g_state.io.?);
+
     if (state.initialized) return;
+
     state.native = .init(param);
 
     const device = state.native.device;
 
     for (&state.cmd_ctxs) |*cmd_ctx| {
         cmd_ctx.* = try CommandContext.init(device, std.unicode.utf8ToUtf16LeStringLiteral("Plugin::d3d12_renderer.cmd_ctx"));
+    }
+    errdefer {
+        for (&state.cmd_ctxs) |*cmd_ctx| {
+            cmd_ctx.deinit();
+        }
     }
 
     {
@@ -160,6 +194,7 @@ pub fn init(param: d3d.D3D12.VerifiedParam) !void {
 
         _ = state.rtv_desc_heap.ID3D12Object.SetName(std.unicode.utf8ToUtf16LeStringLiteral("Plugin::d3d12_renderer.rtv_desc_heap"));
     }
+    errdefer _ = state.rtv_desc_heap.IUnknown.Release();
 
     {
         log.info("Creating SRV descriptor heap...", .{});
@@ -174,6 +209,7 @@ pub fn init(param: d3d.D3D12.VerifiedParam) !void {
 
         _ = state.srv_desc_heap.ID3D12Object.SetName(std.unicode.utf8ToUtf16LeStringLiteral("Plugin::d3d12_renderer.srv_desc_heap"));
     }
+    errdefer _ = state.srv_desc_heap.IUnknown.Release();
 
     log.info("Creating render targets...", .{});
 
@@ -185,6 +221,12 @@ pub fn init(param: d3d.D3D12.VerifiedParam) !void {
     }
 
     log.info("Swapchain buffer count: {d}", .{swapchain_desc.BufferCount});
+
+    errdefer {
+        for (state.rts) |rt| {
+            if (rt) |r| _ = r.IUnknown.Release();
+        }
+    }
 
     {
         // Create back buffer rtvs.
@@ -275,57 +317,81 @@ pub fn init(param: d3d.D3D12.VerifiedParam) !void {
         return error.ImGuiInitFailed;
     }
 
-    state.imgui_backend_datas[0] = cimgui.igGetIO().*.BackendRendererUserData;
-
-    cimgui.igGetIO().*.BackendRendererUserData = null;
-
-    init_info = std.mem.zeroes(imgui_c.ImGui_ImplDX12_InitInfo);
-    init_info.Device = @ptrCast(device);
-    init_info.CommandQueue = @ptrCast(state.native.queue);
-    init_info.NumFramesInFlight = @intCast(swapchain_desc.BufferCount);
-    init_info.RTVFormat = @intFromEnum(bb_desc.Format);
-    init_info.DSVFormat = @intFromEnum(dxgi.common.DXGI_FORMAT_UNKNOWN);
-    init_info.SrvDescriptorHeap = @ptrCast(state.srv_desc_heap);
-    init_info.LegacySingleSrvCpuDescriptor = .{ .ptr = getCpuSrv(device, .imgui_font_vr).ptr };
-    init_info.LegacySingleSrvGpuDescriptor = .{ .ptr = getGpuSrv(device, .imgui_font_vr).ptr };
-
-    if (!imgui_c.ImGui_ImplDX12_Init(&init_info)) {
-        return error.ImGuiVRInitFailed;
-    }
-
-    state.imgui_backend_datas[1] = cimgui.igGetIO().*.BackendRendererUserData;
-
     log.info("Plugin D3D12 for ImGui Initialized!", .{});
 
     state.initialized = true;
 }
 
 pub fn deinit() void {
+    g_state.mtx.lockUncancelable(g_state.io.?);
+    defer g_state.mtx.unlock(g_state.io.?);
+
     if (!state.initialized) return;
+
+    state.cmd_ctx_index = 0;
+    for (&state.cmd_ctxs) |*cmd_ctx| {
+        cmd_ctx.deinit();
+    }
+
+    _ = state.rtv_desc_heap.IUnknown.Release();
+    _ = state.srv_desc_heap.IUnknown.Release();
+
+    for (state.rts) |rt| {
+        if (rt) |r| _ = r.IUnknown.Release();
+    }
+
+    state.rt_width = 0;
+    state.rt_height = 0;
+
+    state.native = undefined;
 
     state.initialized = false;
 }
 
-pub fn updateNative(param: d3d.D3D12.VerifiedParam) void {
+pub fn render() !void {
+    try g_state.mtx.lock(g_state.io.?);
+    defer g_state.mtx.unlock(g_state.io.?);
+
     if (!state.initialized) return;
 
-    const new_native = d3d.D3D12.init(param);
+    const cmd_ctx = &state.cmd_ctxs[state.cmd_ctx_index];
 
-    if (new_native.device != state.native.device) {
-        std.log.warn("D3D12 device was different", .{});
-    }
-    if (new_native.swapchain != state.native.swapchain) {
-        std.log.warn("D3D12 Swapchain was different", .{});
-    }
-    if (new_native.queue != state.native.queue) {
-        std.log.warn("D3D12 Command Queue was different", .{});
+    const device = state.native.device;
+    const swapchain = state.native.swapchain;
+    const bb_index = swapchain.GetCurrentBackBufferIndex();
+
+    if (bb_index > state.rts.len or state.rts[bb_index] == null) {
+        std.log.err("RTV for index {} is null or missing, reinitializing...", .{bb_index});
+        return error.BackBufferRTVNull;
     }
 
-    state.native = new_native;
-}
+    cmd_ctx.wait(windows_programming.INFINITE);
+    {
+        cmd_ctx.has_commands = true;
 
-pub fn renderImGui() !void {
-    if (!state.initialized) return;
+        var barriers: [1]d3d12.D3D12_RESOURCE_BARRIER = .{std.mem.zeroes(d3d12.D3D12_RESOURCE_BARRIER)};
+        barriers[0].Type = .TRANSITION;
+        barriers[0].Flags = .{};
+        barriers[0].Anonymous.Transition.Subresource = d3d12.D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+        var rts: [1]d3d12.D3D12_CPU_DESCRIPTOR_HANDLE = undefined;
+
+        // Draw to the back buffer.
+        barriers[0].Anonymous.Transition.pResource = state.rts[bb_index];
+        barriers[0].Anonymous.Transition.StateBefore = d3d12.D3D12_RESOURCE_STATE_PRESENT;
+        barriers[0].Anonymous.Transition.StateAfter = d3d12.D3D12_RESOURCE_STATE_RENDER_TARGET;
+        cmd_ctx.cmd_list.ResourceBarrier(barriers.len, &barriers);
+        rts[0] = getCpuRtv(device, @enumFromInt(bb_index));
+        cmd_ctx.cmd_list.OMSetRenderTargets(1, @ptrCast(&rts[0]), 0, null);
+        cmd_ctx.cmd_list.SetDescriptorHeaps(1, @ptrCast(&state.srv_desc_heap));
+
+        imgui_c.ImGui_ImplDX12_RenderDrawData(@ptrCast(cimgui.igGetDrawData()), @ptrCast(cmd_ctx.cmd_list));
+
+        barriers[0].Anonymous.Transition.StateBefore = d3d12.D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barriers[0].Anonymous.Transition.StateAfter = d3d12.D3D12_RESOURCE_STATE_PRESENT;
+        cmd_ctx.cmd_list.ResourceBarrier(barriers.len, &barriers);
+    }
+    try cmd_ctx.execute(state.native.queue);
 }
 
 fn getCpuRtv(device: *d3d12.ID3D12Device, rtv: RTV) d3d12.D3D12_CPU_DESCRIPTOR_HANDLE {

@@ -1,14 +1,19 @@
 const std = @import("std");
-const windows = std.os.windows;
 
 const re = @import("reframework");
-const interop = re.interop;
-const d3d = re.d3d;
-const d3d12_imgui_render = @import("d3d12_imgui_render.zig");
 
 const win32 = @import("win32");
 const cimgui = @import("cimgui");
 const imgui_c = @import("imgui_c");
+
+const d3d12_imgui_render = @import("d3d12_imgui_render.zig");
+
+const managed_types = @import("managed_types.zig");
+
+const windows = std.os.windows;
+
+const interop = re.interop;
+const d3d = re.d3d;
 
 const State = struct {
     api: re.api.Api,
@@ -73,54 +78,11 @@ const sdk_spec = .{
     .type_definition = .all,
 };
 
-const PlayerEquipment = interop.ManagedObject("app.PlayerEquipment", .{
-    .consumeLoading = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-    },
-}, .{});
-
-const HitPoint = interop.ManagedObject("app.HitPoint", .{
-    .set_Invincible = .{
-        .params = .{
-            .{ .type_name = "System.Boolean", .type = bool },
-        },
-    },
-    .get_CurrentMaximumHitPoint = .{
-        .params = .{},
-        .ret = .{ .type = i32 },
-    },
-    .get_CurrentHitPoint = .{
-        .params = .{},
-        .ret = .{ .type = i32 },
-    },
-    .resetHitPoint = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-    },
-}, .{});
-
-const PlayerContext = interop.ManagedObject("app.PlayerContext", .{
-    .get_HitPoint = .{
-        .params = .{},
-        .ret = .{ .type = HitPoint },
-    },
-}, .{});
-
-const CharacterManager = interop.ManagedObject("app.CharacterManager", .{
-    .getPlayerContextRef = .{
-        .params = .{},
-        .ret = .{ .type = ?PlayerContext },
-    },
-}, .{});
-
-const ItemManager = interop.ManagedObject("app.ItemManager", .{}, .{
-    ._InfinityGun = .{ .type = bool },
-    ._InfinityAxe = .{ .type = bool },
-    ._InfinityRocketLauncher = .{ .type = bool },
-});
+const PlayerEquipment = managed_types.PlayerEquipment;
+const HitPoint = managed_types.HitPoint;
+const PlayerContext = managed_types.PlayerContext;
+const CharacterManager = managed_types.CharacterManager;
+const ItemManager = managed_types.ItemManager;
 
 fn init(api: re.Api) !void {
     g_state.api = api;
@@ -213,8 +175,6 @@ fn applyInfiniteAmmoHack() !void {
 }
 
 var imgui_initialized: bool = false;
-var d3d11: d3d.D3D11 = undefined;
-var d3d12: d3d.D3D12 = undefined;
 
 export fn print_win_error_code(msg: [*:0]const u8, res: win32.foundation.HRESULT) callconv(.c) void {
     @setRuntimeSafety(false);
@@ -223,7 +183,20 @@ export fn print_win_error_code(msg: [*:0]const u8, res: win32.foundation.HRESULT
 
 fn initImGui() !void {
     if (imgui_initialized) return;
+
+    if (!cimgui.igDebugCheckVersionAndDataLayout(
+        cimgui.IMGUI_VERSION,
+        @sizeOf(cimgui.ImGuiIO),
+        @sizeOf(cimgui.ImGuiStyle),
+        @sizeOf(cimgui.ImVec2),
+        @sizeOf(cimgui.ImVec4),
+        @sizeOf(cimgui.ImDrawVert),
+        @sizeOf(cimgui.ImDrawIdx),
+    )) {
+        return error.ImGuiVersionCheckFailed;
+    }
     if (cimgui.igCreateContext(null) == null) return error.ImGuiCreateContextFailed;
+
     cimgui.igGetIO().*.IniFilename = "re9_basic.ini".ptr;
     const param = try g_state.api.verifiedParam(.{ .renderer_data = .{.renderer_type} });
 
@@ -231,13 +204,13 @@ fn initImGui() !void {
 
     switch (g_state.renderer_type) {
         .d3d11 => {
-            d3d11 = .init(try d3d.D3D11.VerifiedParam.init(param.native));
+            var d3d11: d3d.D3D11 = .init(try d3d.D3D11.VerifiedParam.init(param.native));
             g_state.hwnd = (try d3d11.getHwnd()) orelse return error.GetHwndFailed;
             if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
         },
         .d3d12 => {
             const d3d12_param = try d3d.D3D12.VerifiedParam.init(param.native);
-            d3d12 = .init(d3d12_param);
+            var d3d12: d3d.D3D12 = .init(d3d12_param);
             g_state.hwnd = (try d3d12.getHwnd()) orelse return error.GetHwndFailed;
             if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
             try d3d12_imgui_render.init(d3d12_param);
@@ -265,21 +238,21 @@ fn newFrame() !void {
     }
 
     if (g_state.renderer_type == .d3d12) {
-        d3d12_imgui_render.updateNative(try d3d.D3D12.VerifiedParam.init(g_state.api.param.native));
+        imgui_c.ImGui_ImplDX12_NewFrame();
+        imgui_c.ImGui_ImplWin32_NewFrame();
 
-        // imgui_c.ImGui_ImplDX12_NewFrame();
-        // imgui_c.ImGui_ImplWin32_NewFrame();
+        cimgui.igNewFrame();
 
-        // cimgui.igNewFrame();
+        _ = cimgui.igBegin("HelloWorld!", &show_demo_window, 0);
+        _ = cimgui.igText("This is a basic REFramework plugin example written in Zig!");
+        _ = cimgui.igText("Feel free to use this as a starting point for your own plugins.");
+        _ = cimgui.igText("Check out the source code for this example to see how it works.");
+        _ = cimgui.igEnd();
 
-        // if (show_demo_window) {
-        //     cimgui.igShowDemoWindow(&show_demo_window);
-        // }
+        cimgui.igEndFrame();
+        cimgui.igRender();
 
-        // cimgui.igEndFrame();
-        // cimgui.igRender();
-
-        // try d3d12_imgui_render.renderImGui();
+        try d3d12_imgui_render.render();
     }
 }
 
@@ -302,9 +275,40 @@ extern "c" fn ImGui_ImplWin32_WndProcHandler(
 ) callconv(.c) win32.foundation.LRESULT;
 
 fn onMessage(hwnd: windows.HWND, msg: windows.UINT, wparam: win32.foundation.WPARAM, lparam: windows.LPARAM) bool {
+    if (!imgui_initialized) {
+        return true;
+    }
     _ = ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
 
-    return !cimgui.igGetIO().*.WantCaptureMouse and !cimgui.igGetIO().*.WantCaptureKeyboard;
+    // const io = cimgui.igGetIO();
+    if (show_demo_window) {
+        const wmsg = win32.ui.windows_and_messaging;
+        if (msg == wmsg.WM_INPUT and wparam & 0xff == wmsg.RIM_INPUT) {
+            return false;
+        }
+
+        const forcefully_allowed_messages = [_]windows.UINT{
+            wmsg.WM_DEVICECHANGE,
+            wmsg.WM_SHOWWINDOW,
+            wmsg.WM_ACTIVATE,
+            wmsg.WM_ACTIVATEAPP,
+            wmsg.WM_CLOSE,
+            wmsg.WM_DPICHANGED,
+            wmsg.WM_SIZING,
+            wmsg.WM_MOUSEACTIVATE,
+        };
+        for (forcefully_allowed_messages) |allowed_msg| {
+            if (msg != allowed_msg) {
+                continue;
+            }
+            // TODO: ..
+            // if (io.*.WantCaptureMouse or io.*.WantCaptureKeyboard or io.*.WantTextInput) {
+            //     return false;
+            // }
+        }
+    }
+
+    return true;
 }
 
 fn onDeviceReset() void {
@@ -335,9 +339,6 @@ comptime {
     });
 }
 
-const DLL_PROCESS_DETACH: windows.DWORD = 0;
-const DLL_PROCESS_ATTACH: windows.DWORD = 1;
-
 pub fn DllMain(
     hinstDLL: windows.HINSTANCE,
     fdwReason: windows.DWORD,
@@ -347,13 +348,15 @@ pub fn DllMain(
     _ = lpReserved;
 
     switch (fdwReason) {
-        DLL_PROCESS_ATTACH => {
+        win32.system.system_services.DLL_PROCESS_ATTACH => {
             g_state.allocator = debug_allocator.allocator();
             threaded = .init(g_state.allocator, .{});
             g_state.io = threaded.io();
             g_state.interop_cache = .init(g_state.allocator, g_state.io);
+
+            d3d12_imgui_render.g_state.io = g_state.io;
         },
-        DLL_PROCESS_DETACH => {},
+        win32.system.system_services.DLL_PROCESS_DETACH => {},
         else => {},
     }
 
