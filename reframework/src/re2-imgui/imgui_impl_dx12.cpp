@@ -552,6 +552,8 @@ void ImGui_ImplDX12_UpdateTexture(ImTextureData* tex)
 bool    ImGui_ImplDX12_CreateDeviceObjects()
 {
     ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData();
+    IM_ASSERT(bd && "bd null");
+    IM_ASSERT(bd->pd3dDevice && "pd3dDevice null");
     if (!bd || !bd->pd3dDevice)
         return false;
     if (bd->pPipelineState)
@@ -624,17 +626,21 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
             if (d3d12_dll == nullptr)
                 d3d12_dll = ::LoadLibraryA("d3d12.dll");
 
+            IM_ASSERT(d3d12_dll && "d3d12_dll null");
             if (d3d12_dll == nullptr)
                 return false;
         }
 
         _PFN_D3D12_SERIALIZE_ROOT_SIGNATURE D3D12SerializeRootSignatureFn = (_PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)(void*)::GetProcAddress(d3d12_dll, "D3D12SerializeRootSignature");
+        IM_ASSERT(D3D12SerializeRootSignatureFn && "d3d12_dll.D3D12SerializeRootSignatureFn null");
         if (D3D12SerializeRootSignatureFn == nullptr)
             return false;
 
         ID3DBlob* blob = nullptr;
-        if (D3D12SerializeRootSignatureFn(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr) != S_OK)
+        if (D3D12SerializeRootSignatureFn(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr) != S_OK) {
+            IM_ASSERT(0 && "d3d12_dll.D3D12SerializeRootSignatureFn failed!");
             return false;
+        }
 
         bd->pd3dDevice->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&bd->pRootSignature));
         blob->Release();
@@ -876,7 +882,7 @@ bool ImGui_ImplDX12_Init(ImGui_ImplDX12_InitInfo* init_info)
 #ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
 // Legacy initialization API Obsoleted in 1.91.5
 // font_srv_cpu_desc_handle and font_srv_gpu_desc_handle are handles to a single SRV descriptor to use for the internal font texture, they must be in 'srv_descriptor_heap'
-bool ImGui_ImplDX12_Init(ID3D12Device* device, int num_frames_in_flight, DXGI_FORMAT rtv_format, ID3D12DescriptorHeap* srv_descriptor_heap, D3D12_CPU_DESCRIPTOR_HANDLE font_srv_cpu_desc_handle, D3D12_GPU_DESCRIPTOR_HANDLE font_srv_gpu_desc_handle)
+bool ImGui_ImplDX12_InitLegacy(ID3D12Device* device, int num_frames_in_flight, DXGI_FORMAT rtv_format, ID3D12DescriptorHeap* srv_descriptor_heap, D3D12_CPU_DESCRIPTOR_HANDLE font_srv_cpu_desc_handle, D3D12_GPU_DESCRIPTOR_HANDLE font_srv_gpu_desc_handle)
 {
     ImGui_ImplDX12_InitInfo init_info;
     init_info.Device = device;

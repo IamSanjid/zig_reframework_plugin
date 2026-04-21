@@ -166,14 +166,14 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
     const cimgui_conf = cimgui.getConfig(false);
 
     const imgui_clib = cimgui_dep.artifact(cimgui_conf.clib_name);
-    imgui_clib.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
+    // imgui_clib.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
 
     const imgui = b.addTranslateC(.{
         .target = target,
         .optimize = optimize,
         .root_source_file = cimgui_dep.path(b.fmt("{s}/cimgui.h", .{cimgui_conf.include_dir})),
     });
-    imgui.defineCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
+    // imgui.defineCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
 
     const imgui_c = b.addTranslateC(.{
         .optimize = optimize,
@@ -184,7 +184,7 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
     // imgui_c.defineCMacro("IMGUI_IMPL_API", "extern \"C\" __declspec(dllexport)");
     imgui_c.defineCMacro("TRANSLATE_C_DX11", null);
     imgui_c.defineCMacro("TRANSLATE_C_DX12", null);
-    imgui_c.defineCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
+    // imgui_c.defineCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
     // imgui_c.addIncludePath(cimgui_dep.path(cimgui_conf.include_dir));
     // get our custom imgui.h
     imgui_c.addIncludePath(b.path("src/examples/"));
@@ -199,7 +199,7 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
     to.root_module.link_libcpp = target.result.abi != .msvc;
     to.root_module.addCMacro("IMGUI_API", "__declspec(dllexport)");
     to.root_module.addCMacro("IMGUI_IMPL_API", "extern \"C\" __declspec(dllexport)");
-    to.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
+    // to.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
     to.root_module.addIncludePath(cimgui_dep.path(cimgui_conf.include_dir));
     to.root_module.addIncludePath(b.path("reframework/src/re2-imgui/"));
     to.root_module.addCSourceFiles(.{

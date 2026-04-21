@@ -4,6 +4,7 @@ const windows = std.os.windows;
 const re = @import("reframework");
 const interop = re.interop;
 const d3d = re.d3d;
+const d3d12_imgui_render = @import("d3d12_imgui_render.zig");
 
 const win32 = @import("win32");
 const cimgui = @import("cimgui");
@@ -229,8 +230,10 @@ fn initImGui() !void {
             g_state.hwnd = (try d3d11.getHwnd()) orelse return error.GetHwndFailed;
         },
         .d3d12 => {
-            d3d12 = .init(try d3d.D3D12.VerifiedParam.init(param.native));
+            const d3d12_param = try d3d.D3D12.VerifiedParam.init(param.native);
+            d3d12 = .init(d3d12_param);
             g_state.hwnd = (try d3d12.getHwnd()) orelse return error.GetHwndFailed;
+            try d3d12_imgui_render.init(d3d12_param);
         },
         else => return,
     }
@@ -239,6 +242,8 @@ fn initImGui() !void {
 
     imgui_initialized = true;
 }
+
+var show_demo_window: bool = true;
 
 fn newFrame() !void {
     try initImGui();
@@ -249,12 +254,34 @@ fn newFrame() !void {
         try applyHPHack();
         try applyInfiniteAmmoHack();
     }
+
+    if (!imgui_initialized) {
+        return;
+    }
+
+    if (g_state.renderer_type == .d3d12) {
+        imgui_c.ImGui_ImplDX12_NewFrame();
+        imgui_c.ImGui_ImplWin32_NewFrame();
+
+        cimgui.igNewFrame();
+
+        if (show_demo_window) {
+            cimgui.igShowDemoWindow(&show_demo_window);
+        }
+
+        cimgui.igEndFrame();
+        cimgui.igRender();
+
+        try d3d12_imgui_render.renderImGui(try d3d.D3D12.VerifiedParam.init(g_state.api.param.native));
+    }
 }
 
 fn onPresent() void {
     newFrame() catch |e| {
         if (g_state.interop_cache.ownDiagnostics()) |val| {
-            std.log.err("Interop error: \n{s}", .{val});
+            if (val.len > 0) {
+                std.log.err("Interop error: \n{s}", .{val});
+            }
         } else |_| {}
         std.log.err("Error newFrame: {}", .{e});
     };
@@ -278,8 +305,12 @@ fn onDeviceReset() void {
 
     imgui_initialized = false;
     switch (g_state.renderer_type) {
-        .d3d11 => {},
-        .d3d12 => d3d12 = undefined,
+        .d3d11 => {
+            imgui_c.ImGui_ImplDX11_Shutdown();
+        },
+        .d3d12 => {
+            d3d12_imgui_render.deinit();
+        },
         else => {},
     }
 
