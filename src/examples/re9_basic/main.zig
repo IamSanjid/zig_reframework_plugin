@@ -7,6 +7,7 @@ const cimgui = @import("cimgui");
 const imgui_c = @import("imgui_c");
 
 const d3d12_imgui_render = @import("d3d12_imgui_render.zig");
+const d3d11_imgui_render = @import("d3d11_imgui_render.zig");
 
 const managed_types = @import("managed_types.zig");
 
@@ -107,7 +108,10 @@ fn init(api: re.Api) !void {
                 _ = args;
                 _ = arg_types;
                 _ = ret_addr;
-                return .skip_original;
+                if (current_hack_state.no_ammo_consumption) {
+                    return .skip_original;
+                }
+                return .call_original;
             }
         }.func,
         null,
@@ -119,7 +123,21 @@ fn init(api: re.Api) !void {
 // var hacked_hp: bool = false;
 // var hacked_ammo: bool = false;
 
+const Hack = struct {
+    invincible: bool = true,
+    infinite_gun: bool = true,
+    infinite_axe: bool = true,
+    infinite_rocket: bool = true,
+    no_ammo_consumption: bool = true,
+};
+
+var old_hack_state: ?Hack = null;
+var current_hack_state: Hack = .{};
+
 fn applyHPHack() !void {
+    if (!current_hack_state.invincible) {
+        return;
+    }
     const char_mgr = try CharacterManager.init(
         &g_state.interop_cache,
         .fo(g_state.sdk),
@@ -153,16 +171,34 @@ fn applyInfiniteAmmoHack() !void {
     const infinite_axe = try item_mgr.get(._InfinityAxe, .fo(g_state.sdk));
     const infinite_rocket = try item_mgr.get(._InfinityRocketLauncher, .fo(g_state.sdk));
 
-    if (!infinite_gun) {
-        try item_mgr.set(._InfinityGun, .fo(g_state.sdk), true);
+    if (old_hack_state == null) {
+        old_hack_state = .{
+            .invincible = current_hack_state.invincible,
+            .infinite_gun = infinite_gun,
+            .infinite_axe = infinite_axe,
+            .infinite_rocket = infinite_rocket,
+            .no_ammo_consumption = current_hack_state.no_ammo_consumption,
+        };
     }
 
-    if (!infinite_axe) {
-        try item_mgr.set(._InfinityAxe, .fo(g_state.sdk), true);
+    // restoring old default in-game value.
+    if (!current_hack_state.infinite_gun)
+        current_hack_state.infinite_gun = old_hack_state.?.infinite_gun;
+    if (!current_hack_state.infinite_axe)
+        current_hack_state.infinite_axe = old_hack_state.?.infinite_axe;
+    if (!current_hack_state.infinite_rocket)
+        current_hack_state.infinite_rocket = old_hack_state.?.infinite_rocket;
+
+    if (infinite_gun != current_hack_state.infinite_gun) {
+        try item_mgr.set(._InfinityGun, .fo(g_state.sdk), current_hack_state.infinite_gun);
     }
 
-    if (!infinite_rocket) {
-        try item_mgr.set(._InfinityRocketLauncher, .fo(g_state.sdk), true);
+    if (infinite_axe != current_hack_state.infinite_axe) {
+        try item_mgr.set(._InfinityAxe, .fo(g_state.sdk), current_hack_state.infinite_axe);
+    }
+
+    if (infinite_rocket != current_hack_state.infinite_rocket) {
+        try item_mgr.set(._InfinityRocketLauncher, .fo(g_state.sdk), current_hack_state.infinite_rocket);
     }
 
     //infinite_gun = try item_mgr.get(._InfinityGun, .fo(g_state.sdk));
@@ -175,11 +211,6 @@ fn applyInfiniteAmmoHack() !void {
 }
 
 var imgui_initialized: bool = false;
-
-export fn print_win_error_code(msg: [*:0]const u8, res: win32.foundation.HRESULT) callconv(.c) void {
-    @setRuntimeSafety(false);
-    std.log.err("{s}: 0x{x}", .{ msg, @as(u32, @intCast(res)) });
-}
 
 fn initImGui() !void {
     if (imgui_initialized) return;
@@ -197,7 +228,9 @@ fn initImGui() !void {
     }
     if (cimgui.igCreateContext(null) == null) return error.ImGuiCreateContextFailed;
 
-    cimgui.igGetIO().*.IniFilename = "re9_basic.ini".ptr;
+    cimgui.igGetIO().*.IniFilename = "re9_basic.ini";
+    cimgui.igGetIO().*.ConfigFlags |= cimgui.ImGuiConfigFlags_NoMouseCursorChange;
+
     const param = try g_state.api.verifiedParam(.{ .renderer_data = .{.renderer_type} });
 
     g_state.renderer_type = .fromU32(@intCast(param.safe().renderer_data.safe().renderer_type));
@@ -207,13 +240,13 @@ fn initImGui() !void {
             var d3d11: d3d.D3D11 = .init(try d3d.D3D11.VerifiedParam.init(param.native));
             g_state.hwnd = (try d3d11.getHwnd()) orelse return error.GetHwndFailed;
             if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
+            try d3d11_imgui_render.init(d3d11);
         },
         .d3d12 => {
-            const d3d12_param = try d3d.D3D12.VerifiedParam.init(param.native);
-            var d3d12: d3d.D3D12 = .init(d3d12_param);
+            var d3d12: d3d.D3D12 = .init(try d3d.D3D12.VerifiedParam.init(param.native));
             g_state.hwnd = (try d3d12.getHwnd()) orelse return error.GetHwndFailed;
             if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
-            try d3d12_imgui_render.init(d3d12_param);
+            try d3d12_imgui_render.init(d3d12);
         },
         else => return,
     }
@@ -221,10 +254,67 @@ fn initImGui() !void {
     imgui_initialized = true;
 }
 
-var show_demo_window: bool = true;
+const ui_state = struct {
+    var show_ui: bool = true;
+    var focused_any: bool = false;
+};
 
-fn newFrame() !void {
-    try initImGui();
+fn drawUI() void {
+    if (!ui_state.show_ui) {
+        return;
+    }
+    _ = cimgui.igBegin("RE9 Basic in Zig!", &ui_state.show_ui, 0);
+
+    cimgui.igText("This is a basic REFramework plugin example written in Zig!");
+
+    cimgui.igSeparatorText("Basic Hacks");
+
+    _ = cimgui.igCheckbox("Invincibility", &current_hack_state.invincible);
+    _ = cimgui.igCheckbox("Infinite Gun Ammo", &current_hack_state.infinite_gun);
+    _ = cimgui.igCheckbox("Infinite Axe Durability", &current_hack_state.infinite_axe);
+    _ = cimgui.igCheckbox("Infinite Rocket Ammo", &current_hack_state.infinite_rocket);
+    _ = cimgui.igCheckbox("No Ammo Consumption", &current_hack_state.no_ammo_consumption);
+
+    _ = cimgui.igEnd();
+
+    ui_state.focused_any = cimgui.igIsWindowFocused(cimgui.ImGuiFocusedFlags_AnyWindow);
+}
+
+fn onNewFrame() !void {
+    // only draw UI when the main Plugin Menu is being drawn.
+    if (g_state.api.isDrawingUI()) {
+        try initImGui();
+
+        if (!imgui_initialized) {
+            return;
+        }
+
+        if (g_state.renderer_type == .d3d11) {
+            imgui_c.ImGui_ImplDX11_NewFrame();
+            imgui_c.ImGui_ImplWin32_NewFrame();
+
+            cimgui.igNewFrame();
+
+            drawUI();
+
+            cimgui.igEndFrame();
+            cimgui.igRender();
+
+            try d3d11_imgui_render.render();
+        } else if (g_state.renderer_type == .d3d12) {
+            imgui_c.ImGui_ImplDX12_NewFrame();
+            imgui_c.ImGui_ImplWin32_NewFrame();
+
+            cimgui.igNewFrame();
+
+            drawUI();
+
+            cimgui.igEndFrame();
+            cimgui.igRender();
+
+            try d3d12_imgui_render.render();
+        }
+    }
 
     {
         try g_state.api.lockLua(g_state.io);
@@ -232,32 +322,10 @@ fn newFrame() !void {
         try applyHPHack();
         try applyInfiniteAmmoHack();
     }
-
-    if (!imgui_initialized) {
-        return;
-    }
-
-    if (g_state.renderer_type == .d3d12) {
-        imgui_c.ImGui_ImplDX12_NewFrame();
-        imgui_c.ImGui_ImplWin32_NewFrame();
-
-        cimgui.igNewFrame();
-
-        _ = cimgui.igBegin("HelloWorld!", &show_demo_window, 0);
-        _ = cimgui.igText("This is a basic REFramework plugin example written in Zig!");
-        _ = cimgui.igText("Feel free to use this as a starting point for your own plugins.");
-        _ = cimgui.igText("Check out the source code for this example to see how it works.");
-        _ = cimgui.igEnd();
-
-        cimgui.igEndFrame();
-        cimgui.igRender();
-
-        try d3d12_imgui_render.render();
-    }
 }
 
 fn onPresent() void {
-    newFrame() catch |e| {
+    onNewFrame() catch |e| {
         if (g_state.interop_cache.ownDiagnostics()) |val| {
             if (val.len > 0) {
                 std.log.err("Interop error: \n{s}", .{val});
@@ -278,14 +346,38 @@ fn onMessage(hwnd: windows.HWND, msg: windows.UINT, wparam: win32.foundation.WPA
     if (!imgui_initialized) {
         return true;
     }
+    const wmsg = win32.ui.windows_and_messaging;
+    const ui_input = win32.ui.input;
+
+    const is_mouse_moving: bool = blk: {
+        if (msg == wmsg.WM_INPUT) {
+            const raw_input_header_sz: u32 = @truncate(@sizeOf(ui_input.RAWINPUTHEADER));
+            var size: u32 = @truncate(@sizeOf(win32.ui.input.RAWINPUT));
+            var raw: ui_input.RAWINPUT = std.mem.zeroes(ui_input.RAWINPUT);
+
+            // obtain size?
+            const lparam_s: usize = @intCast(lparam);
+            _ = ui_input.GetRawInputData(@ptrFromInt(lparam_s), ui_input.RID_INPUT, null, &size, raw_input_header_sz);
+            _ = ui_input.GetRawInputData(@ptrFromInt(lparam_s), ui_input.RID_INPUT, @ptrCast(&raw), &size, raw_input_header_sz);
+
+            if (raw.header.dwType == @intFromEnum(ui_input.RIM_TYPEMOUSE)) {
+                break :blk raw.data.mouse.lLastX > 0 or raw.data.mouse.lLastY > 0;
+            }
+        }
+
+        break :blk false;
+    };
+
     _ = ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
 
-    // const io = cimgui.igGetIO();
-    if (show_demo_window) {
-        const wmsg = win32.ui.windows_and_messaging;
-        if (msg == wmsg.WM_INPUT and wparam & 0xff == wmsg.RIM_INPUT) {
+    if (ui_state.show_ui) {
+        const io = cimgui.igGetIO();
+
+        if (msg == wmsg.WM_INPUT and wparam & 0xff == wmsg.RIM_INPUTSINK) {
             return false;
         }
+
+        // https://github.com/praydog/REFramework/blob/0a74333ac76774884724bbac2ad7fefba702b6a3/src/REFramework.cpp#L1329
 
         const forcefully_allowed_messages = [_]windows.UINT{
             wmsg.WM_DEVICECHANGE,
@@ -297,14 +389,17 @@ fn onMessage(hwnd: windows.HWND, msg: windows.UINT, wparam: win32.foundation.WPA
             wmsg.WM_SIZING,
             wmsg.WM_MOUSEACTIVATE,
         };
-        for (forcefully_allowed_messages) |allowed_msg| {
-            if (msg != allowed_msg) {
-                continue;
+
+        if (std.mem.findScalar(windows.UINT, &forcefully_allowed_messages, msg) == null) {
+            if (ui_state.focused_any) {
+                if (io.*.WantCaptureMouse or io.*.WantCaptureKeyboard or io.*.WantTextInput) {
+                    return false;
+                }
+            } else {
+                if (!is_mouse_moving and (io.*.WantCaptureMouse or io.*.WantCaptureKeyboard or io.*.WantTextInput)) {
+                    return false;
+                }
             }
-            // TODO: ..
-            // if (io.*.WantCaptureMouse or io.*.WantCaptureKeyboard or io.*.WantTextInput) {
-            //     return false;
-            // }
         }
     }
 
@@ -318,8 +413,10 @@ fn onDeviceReset() void {
     switch (g_state.renderer_type) {
         .d3d11 => {
             imgui_c.ImGui_ImplDX11_Shutdown();
+            d3d11_imgui_render.deinit();
         },
         .d3d12 => {
+            imgui_c.ImGui_ImplDX12_Shutdown();
             d3d12_imgui_render.deinit();
         },
         else => {},
@@ -354,6 +451,7 @@ pub fn DllMain(
             g_state.io = threaded.io();
             g_state.interop_cache = .init(g_state.allocator, g_state.io);
 
+            d3d11_imgui_render.g_state.io = g_state.io;
             d3d12_imgui_render.g_state.io = g_state.io;
         },
         win32.system.system_services.DLL_PROCESS_DETACH => {},

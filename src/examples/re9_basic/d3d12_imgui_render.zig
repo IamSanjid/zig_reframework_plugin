@@ -1,3 +1,4 @@
+/// 1-to-1: https://github.com/praydog/REFramework/blob/0a74333ac76774884724bbac2ad7fefba702b6a3/src/REFramework.cpp#L965
 const std = @import("std");
 const d3d = @import("reframework").d3d;
 const win32 = @import("win32");
@@ -37,8 +38,6 @@ const SRV = enum(u32) {
     blank,
     count,
 };
-
-// 1-to-1: https://github.com/praydog/REFramework/blob/0a74333ac76774884724bbac2ad7fefba702b6a3/src/REFramework.cpp#L965
 
 const CommandContext = struct {
     cmd_allocator: *d3d12.ID3D12CommandAllocator,
@@ -159,15 +158,15 @@ const state = struct {
     var rt_height: u32 = 0;
 };
 
-const log = std.log.scoped(.d3dd12_renderer);
+const log = std.log.scoped(.d3d12_renderer);
 
-pub fn init(param: d3d.D3D12.VerifiedParam) !void {
+pub fn init(d3d12_ins: d3d.D3D12) !void {
     try g_state.mtx.lock(g_state.io.?);
     defer g_state.mtx.unlock(g_state.io.?);
 
     if (state.initialized) return;
 
-    state.native = .init(param);
+    state.native = d3d12_ins;
 
     const device = state.native.device;
 
@@ -314,7 +313,7 @@ pub fn init(param: d3d.D3D12.VerifiedParam) !void {
     init_info.LegacySingleSrvGpuDescriptor = .{ .ptr = getGpuSrv(device, .imgui_font_backbuffer).ptr };
 
     if (!imgui_c.ImGui_ImplDX12_Init(&init_info)) {
-        return error.ImGuiInitFailed;
+        return error.ImGuiD3D12InitFailed;
     }
 
     log.info("Plugin D3D12 for ImGui Initialized!", .{});
@@ -342,7 +341,6 @@ pub fn deinit() void {
 
     state.rt_width = 0;
     state.rt_height = 0;
-
     state.native = undefined;
 
     state.initialized = false;
@@ -361,7 +359,7 @@ pub fn render() !void {
     const bb_index = swapchain.GetCurrentBackBufferIndex();
 
     if (bb_index > state.rts.len or state.rts[bb_index] == null) {
-        std.log.err("RTV for index {} is null or missing, reinitializing...", .{bb_index});
+        log.err("RTV for index {} is null or missing, reinitializing...", .{bb_index});
         return error.BackBufferRTVNull;
     }
 

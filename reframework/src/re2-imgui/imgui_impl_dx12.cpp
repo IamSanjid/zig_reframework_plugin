@@ -549,13 +549,9 @@ void ImGui_ImplDX12_UpdateTexture(ImTextureData* tex)
         ImGui_ImplDX12_DestroyTexture(tex);
 }
 
-extern "C" void print_win_error_code(const char* msg, HRESULT code);
-
 bool    ImGui_ImplDX12_CreateDeviceObjects()
 {
     ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData();
-    IM_ASSERT(bd && "bd null");
-    IM_ASSERT(bd->pd3dDevice && "pd3dDevice null");
     if (!bd || !bd->pd3dDevice)
         return false;
     if (bd->pPipelineState)
@@ -628,25 +624,19 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
             if (d3d12_dll == nullptr)
                 d3d12_dll = ::LoadLibraryA("d3d12.dll");
 
-            IM_ASSERT(d3d12_dll && "d3d12_dll null");
             if (d3d12_dll == nullptr)
                 return false;
         }
 
         _PFN_D3D12_SERIALIZE_ROOT_SIGNATURE D3D12SerializeRootSignatureFn = (_PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)(void*)::GetProcAddress(d3d12_dll, "D3D12SerializeRootSignature");
-        IM_ASSERT(D3D12SerializeRootSignatureFn && "d3d12_dll.D3D12SerializeRootSignatureFn null");
         if (D3D12SerializeRootSignatureFn == nullptr)
             return false;
 
         ID3DBlob* blob = nullptr;
-        if (D3D12SerializeRootSignatureFn(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr) != S_OK) {
-            IM_ASSERT(0 && "d3d12_dll.D3D12SerializeRootSignatureFn failed!");
+        if (D3D12SerializeRootSignatureFn(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr) != S_OK)
             return false;
-        }
 
-        IM_ASSERT(
-            SUCCEEDED(bd->pd3dDevice->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&bd->pRootSignature)))
-                && "CreateRootSignature failed");
+        bd->pd3dDevice->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&bd->pRootSignature));
         blob->Release();
     }
 
@@ -700,10 +690,8 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
               return output;\
             }";
 
-        if (FAILED(D3DCompile(vertexShader, strlen(vertexShader), nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &vertexShaderBlob, nullptr))) {
-            IM_ASSERT(0 && "D3DCompile vertexShader failed!");
+        if (FAILED(D3DCompile(vertexShader, strlen(vertexShader), nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &vertexShaderBlob, nullptr)))
             return false; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
-        }
         psoDesc.VS = { vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize() };
 
         // Create the input layout
@@ -736,7 +724,6 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
 
         if (FAILED(D3DCompile(pixelShader, strlen(pixelShader), nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &pixelShaderBlob, nullptr)))
         {
-            IM_ASSERT(0 && "D3DCompile pixelShader failed!");
             vertexShaderBlob->Release();
             return false; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
         }
@@ -785,21 +772,11 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
         desc.BackFace = desc.FrontFace;
     }
 
-    IM_ASSERT(bd->pRootSignature != nullptr);
-    IM_ASSERT(bd->RTVFormat != DXGI_FORMAT_UNKNOWN);
-    IM_ASSERT(vertexShaderBlob != nullptr);
-    IM_ASSERT(pixelShaderBlob != nullptr);
-
     HRESULT result_pipeline_state = bd->pd3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&bd->pPipelineState));
     vertexShaderBlob->Release();
     pixelShaderBlob->Release();
-    if (result_pipeline_state != S_OK) {
-        print_win_error_code("CreateGraphicsPipelineState", result_pipeline_state);
-        HRESULT removed = bd->pd3dDevice->GetDeviceRemovedReason();
-        print_win_error_code("GetDeviceRemovedReason", removed);
-        IM_ASSERT(0 && "result_pipeline_state is not ok");
+    if (result_pipeline_state != S_OK)
         return false;
-    }
 
     return true;
 }

@@ -48,7 +48,7 @@ pub inline fn initPlugin(
         onDeviceReset: ?fn () void = null,
         onMessage: ?fn (windows.HWND, windows.UINT, usize, windows.LPARAM) bool = null,
         onImGuiFrame: ?fn (*API_C.REFImGuiFrameCbData) void = null,
-        onImGuiDraw: ?fn (*API_C.REFImGuiFrameCbData) void = null,
+        onImGuiDrawUI: ?fn (*API_C.REFImGuiFrameCbData) void = null,
     },
 ) void {
     const CWrapped = struct {
@@ -96,9 +96,9 @@ pub inline fn initPlugin(
                 }
             }
 
-            if (options.onImGuiDraw) |f| {
-                if (!api_instance.param.safe().functions.safe().on_imgui_draw(&struct {
-                    fn func(data: [*c]API_C.REFImGuiDrawCbData) callconv(.c) void {
+            if (options.onImGuiDrawUI) |f| {
+                if (!api_instance.param.safe().functions.safe().on_imgui_draw_ui(&struct {
+                    fn func(data: [*c]API_C.REFImGuiFrameCbData) callconv(.c) void {
                         std.debug.assert(data != null);
                         return f(data);
                     }
