@@ -1,2 +1,1 @@
-Remove all the imgui_renderer related codes from root or the base reframework plugin wrapper, its best to leave that part for the users to implement on their own, just add simple wrappers for VerifiedParam like check command_queue for d3d12 runtime
-access the swapchain, device, command_queue without any null checks(we're checking those during init), no need to do any allocation or anything... just keep the hwnd getter part, and expose swapchainBase.
+# REFramework Plugin

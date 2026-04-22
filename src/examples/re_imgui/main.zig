@@ -60,6 +60,8 @@ const cimgui_dll = struct {
             return error.GetProcAddressFailed);
         igText = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igText") orelse
             return error.GetProcAddressFailed);
+
+        initialized = true;
     }
 };
 

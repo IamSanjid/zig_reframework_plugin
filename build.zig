@@ -42,7 +42,7 @@ fn REFrameworkExamplesT(comptime examples: anytype) type {
                 inline for (@typeInfo(ExamplesT).@"struct".fields) |field| {
                     const tag_name = @tagName(@field(examples, field.name));
                     const builder = @field(Owner, tag_name ++ "_builder");
-                    return builder(b, target, optimize);
+                    builder(b, target, optimize);
                 }
             } else {
                 inline for (@typeInfo(ExamplesT).@"struct".fields) |field| {
@@ -140,20 +140,17 @@ fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
         switch (renderer) {
             .dx11 => {
                 mod.linkSystemLibrary("d3d11", .{});
-                // mod.linkSystemLibrary("d3dcsx");
             },
             .dx12 => {
                 mod.linkSystemLibrary("d3d12", .{});
             },
             .dx11_dx12 => {
                 mod.linkSystemLibrary("d3d11", .{});
-                // mod.linkSystemLibrary("d3dcsx");
                 mod.linkSystemLibrary("d3d12", .{});
             },
         }
         build_options.addOption(u2, "d3d", @intFromEnum(renderer));
-        // mod.linkSystemLibrary("user32", .{});
-        // mod.linkSystemLibrary("d3dcompiler_47", .{});
+        mod.linkSystemLibrary("dxgi", .{});
     } else {
         build_options.addOption(u2, "d3d", 0);
     }

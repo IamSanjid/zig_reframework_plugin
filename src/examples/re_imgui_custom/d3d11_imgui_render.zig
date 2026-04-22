@@ -45,8 +45,8 @@ pub fn init(d3d11_ins: d3d.D3D11) !void {
 
     state.native = d3d11_ins;
 
-    const swapchain = state.native.swapchain;
-    const device = state.native.device;
+    const swapchain = state.native.swapchain.as(dxgi.IDXGISwapChain3);
+    const device = state.native.device.as(d3d11.ID3D11Device);
 
     log.info("Creating RTV of back buffer...", .{});
 
@@ -144,7 +144,7 @@ pub fn render() !void {
 
     if (!state.initialized) return;
 
-    const device = state.native.device;
+    const device = state.native.device.as(d3d11.ID3D11Device);
 
     var context: *d3d11.ID3D11DeviceContext = undefined;
     const clear_color: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };

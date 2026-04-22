@@ -15,33 +15,38 @@ pub const VerifiedParam = Verified(API.REFrameworkPluginInitializeParam, .{
     },
 });
 
-device: *d3d11.ID3D11Device,
-swapchain: *dxgi.IDXGISwapChain3,
+pub const Native = struct {
+    raw: *anyopaque,
+
+    pub inline fn as(self: @This(), comptime DeviceType: type) if (@typeInfo(DeviceType) == .pointer)
+        DeviceType
+    else
+        *DeviceType {
+        return @ptrCast(@alignCast(self.raw));
+    }
+};
+
+device: Native,
+swapchain: Native,
 
 const D3D11 = @This();
 
 pub fn init(param: VerifiedParam) D3D11 {
-    const renderer_data = param.safe().renderer_data;
-    const device: *d3d11.ID3D11Device = @ptrCast(@alignCast(renderer_data.safe().device));
-    const swapchain: *dxgi.IDXGISwapChain3 = @ptrCast(@alignCast(renderer_data.safe().swapchain));
+    const renderer_data = param.safe().renderer_data.safe();
 
     return .{
-        .device = device,
-        .swapchain = swapchain,
+        .device = .{ .raw = renderer_data.device },
+        .swapchain = .{ .raw = renderer_data.swapchain },
     };
-}
-
-pub fn swapchainBase(self: *const D3D11) *dxgi.IDXGISwapChain {
-    return @ptrCast(self.swapchain);
 }
 
 pub fn getHwnd(self: *const D3D11) !?windows.HWND {
     return @ptrCast((try self.getSwapChainDesc()).OutputWindow);
 }
 
-pub fn getSwapChainDesc(self: *const D3D11) !dxgi.DXGI_SWAP_CHAIN_DESC {
+inline fn getSwapChainDesc(self: *const D3D11) !dxgi.DXGI_SWAP_CHAIN_DESC {
     var desc: dxgi.DXGI_SWAP_CHAIN_DESC = undefined;
-    if (self.swapchainBase().GetDesc(&desc) < 0) return error.SwapChainDescFailed;
+    if (win32.zig.FAILED(self.swapchain.as(dxgi.IDXGISwapChain).GetDesc(&desc))) return error.SwapChainDescFailed;
     return desc;
 }
 

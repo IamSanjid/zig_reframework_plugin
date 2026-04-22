@@ -169,7 +169,7 @@ pub fn init(d3d12_ins: d3d.D3D12) !void {
 
     state.native = d3d12_ins;
 
-    const device = state.native.device;
+    const device = state.native.device.as(d3d12.ID3D12Device);
 
     for (&state.cmd_ctxs) |*cmd_ctx| {
         cmd_ctx.* = try CommandContext.init(device, std.unicode.utf8ToUtf16LeStringLiteral("Plugin::d3d12_renderer.cmd_ctx"));
@@ -213,7 +213,7 @@ pub fn init(d3d12_ins: d3d.D3D12) !void {
 
     log.info("Creating render targets...", .{});
 
-    const swapchain = state.native.swapchain;
+    const swapchain = state.native.swapchain.as(dxgi.IDXGISwapChain3);
 
     var swapchain_desc: dxgi.DXGI_SWAP_CHAIN_DESC = std.mem.zeroes(dxgi.DXGI_SWAP_CHAIN_DESC);
     if (FAILED(swapchain.IDXGISwapChain.GetDesc(&swapchain_desc))) {
@@ -305,7 +305,7 @@ pub fn init(d3d12_ins: d3d.D3D12) !void {
 
     var init_info: imgui_c.ImGui_ImplDX12_InitInfo = std.mem.zeroes(imgui_c.ImGui_ImplDX12_InitInfo);
     init_info.Device = @ptrCast(device);
-    init_info.CommandQueue = @ptrCast(state.native.queue);
+    init_info.CommandQueue = state.native.command_queue.as(@TypeOf(init_info.CommandQueue));
     init_info.NumFramesInFlight = @intCast(swapchain_desc.BufferCount);
     init_info.RTVFormat = @intFromEnum(bb_desc.Format);
     init_info.DSVFormat = @intFromEnum(dxgi.common.DXGI_FORMAT_UNKNOWN);
@@ -355,8 +355,8 @@ pub fn render() !void {
 
     const cmd_ctx = &state.cmd_ctxs[state.cmd_ctx_index];
 
-    const device = state.native.device;
-    const swapchain = state.native.swapchain;
+    const device = state.native.device.as(d3d12.ID3D12Device);
+    const swapchain = state.native.swapchain.as(dxgi.IDXGISwapChain3);
     const bb_index = swapchain.GetCurrentBackBufferIndex();
 
     if (bb_index > state.rts.len or state.rts[bb_index] == null) {
@@ -390,7 +390,7 @@ pub fn render() !void {
         barriers[0].Anonymous.Transition.StateAfter = d3d12.D3D12_RESOURCE_STATE_PRESENT;
         cmd_ctx.cmd_list.ResourceBarrier(barriers.len, &barriers);
     }
-    try cmd_ctx.execute(state.native.queue);
+    try cmd_ctx.execute(state.native.command_queue.as(d3d12.ID3D12CommandQueue));
 }
 
 fn getCpuRtv(device: *d3d12.ID3D12Device, rtv: RTV) d3d12.D3D12_CPU_DESCRIPTOR_HANDLE {
