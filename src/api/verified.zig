@@ -1,5 +1,5 @@
 const std = @import("std");
-const type_utils = @import("type_utils.zig");
+const type_utils = @import("../type_utils.zig");
 const spec = @import("spec.zig");
 
 const StructFieldWithIntendedName = type_utils.StructFieldWithIntendedName;

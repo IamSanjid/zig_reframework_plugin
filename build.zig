@@ -13,7 +13,63 @@ const ReframeworkConfig = struct {
     optimize: std.builtin.OptimizeMode,
 };
 
+const Owner = @This();
+
+fn REFrameworkExamplesT(comptime examples: anytype) type {
+    const ExamplesT = @TypeOf(examples);
+    const info = @typeInfo(ExamplesT);
+    if (info != .@"struct" or !info.@"struct".is_tuple) {
+        @compileError("Needs a tuple compile value with only names.");
+    }
+
+    var field_names: [info.@"struct".fields.len + 1][]const u8 = undefined;
+    var field_values: [field_names.len]u32 = undefined;
+    for (info.@"struct".fields, 0..) |field, i| {
+        const tag_name = @tagName(@field(examples, field.name));
+        field_names[i] = tag_name;
+        field_values[i] = @truncate(i);
+    }
+    field_names[info.@"struct".fields.len] = "all";
+    field_values[info.@"struct".fields.len] = @truncate(info.@"struct".fields.len);
+
+    const TagT = @Enum(u32, .nonexhaustive, &field_names, &field_values);
+    return struct {
+        const Tag = TagT;
+        const default: Tag = @enumFromInt(0);
+
+        fn build(tag: Tag, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+            if (tag == .all) {
+                inline for (@typeInfo(ExamplesT).@"struct".fields) |field| {
+                    const tag_name = @tagName(@field(examples, field.name));
+                    const builder = @field(Owner, tag_name ++ "_builder");
+                    return builder(b, target, optimize);
+                }
+            } else {
+                inline for (@typeInfo(ExamplesT).@"struct".fields) |field| {
+                    const tag_name = @tagName(@field(examples, field.name));
+                    if (tag == @field(Tag, tag_name)) {
+                        const builder = @field(Owner, tag_name ++ "_builder");
+                        return builder(b, target, optimize);
+                    }
+                }
+            }
+        }
+    };
+}
+
+const REFrameworkExamples = REFrameworkExamplesT(.{
+    .re9_basic,
+    .re9_additional_save_slots,
+    .re_imgui,
+});
+
 pub fn build(b: *std.Build) void {
+    const example = b.option(
+        REFrameworkExamples.Tag,
+        "example",
+        b.fmt("Choose which example plugin to build. Default: {s}", .{@tagName(REFrameworkExamples.default)}),
+    ) orelse REFrameworkExamples.default;
+
     const d3d = b.option(D3D, "d3d", "Choose which Direct3D renderer surfaces to expose. dx11_dx12 exposes both modules at compile time.");
     const target = b.standardTargetOptions(.{
         .whitelist = &.{
@@ -34,50 +90,7 @@ pub fn build(b: *std.Build) void {
     // simulating `std.Build.addModule`
     b.modules.put(b.graph.arena, b.dupe("reframework"), mod) catch @panic("OOM");
 
-    const re9_basic_plugin = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "re9_basic",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/re9_basic/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{
-                    .name = "reframework",
-                    .module = reframework(b, .{
-                        .d3d = .dx11_dx12,
-                        .target = target,
-                        .optimize = optimize,
-                    }) orelse return,
-                },
-            },
-        }),
-    });
-    addImGuiToExample(b, re9_basic_plugin);
-
-    const re9_additional_save_slots_plugin = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "re9_additional_save_slots",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/re9_additional_save_slots/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{
-                    .name = "reframework",
-                    .module = reframework(b, .{
-                        .d3d = null,
-                        .target = target,
-                        .optimize = optimize,
-                    }) orelse return,
-                },
-            },
-        }),
-    });
-
-    b.installArtifact(re9_basic_plugin);
-    _ = re9_additional_save_slots_plugin;
-    // b.installArtifact(re9_additional_save_slots_plugin);
+    REFrameworkExamples.build(example, b, target, optimize);
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
@@ -139,7 +152,7 @@ fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
         }
         build_options.addOption(u2, "d3d", @intFromEnum(renderer));
         // mod.linkSystemLibrary("user32", .{});
-        mod.linkSystemLibrary("d3dcompiler_47", .{});
+        // mod.linkSystemLibrary("d3dcompiler_47", .{});
     } else {
         build_options.addOption(u2, "d3d", 0);
     }
@@ -148,8 +161,82 @@ fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
     return mod;
 }
 
+fn re9_basic_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const re9_basic_plugin = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "re9_basic",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/re9_basic/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "reframework",
+                    .module = reframework(b, .{
+                        .d3d = .dx11_dx12,
+                        .target = target,
+                        .optimize = optimize,
+                    }) orelse return,
+                },
+            },
+        }),
+    });
+    addImGuiToExample(b, re9_basic_plugin);
+
+    b.installArtifact(re9_basic_plugin);
+}
+
+fn re9_additional_save_slots_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const re9_additional_save_slots_plugin = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "re9_additional_save_slots",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/re9_additional_save_slots/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "reframework",
+                    .module = reframework(b, .{
+                        .d3d = null,
+                        .target = target,
+                        .optimize = optimize,
+                    }) orelse return,
+                },
+            },
+        }),
+    });
+
+    b.installArtifact(re9_additional_save_slots_plugin);
+}
+
+fn re_imgui_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const re_imgui_plugin = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "re_imgui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/re_imgui/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "reframework",
+                    .module = reframework(b, .{
+                        .d3d = null,
+                        .target = target,
+                        .optimize = optimize,
+                    }) orelse return,
+                },
+            },
+        }),
+    });
+    addReframeworkImGuiToExample(b, re_imgui_plugin);
+
+    b.installArtifact(re_imgui_plugin);
+}
+
 fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
-    const cimgui = @import("cimgui");
+    const cimguiGetConfig = @import("cimgui").getConfig;
     const target = to.root_module.resolved_target orelse b.standardTargetOptions(.{
         .default_target = .{ .os_tag = .windows },
     });
@@ -163,12 +250,12 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
         .target = target,
         .optimize = optimize,
     }) orelse return;
-    const cimgui_conf = cimgui.getConfig(false);
+    const cimgui_conf = cimguiGetConfig(false);
 
-    const imgui_clib = cimgui_dep.artifact(cimgui_conf.clib_name);
+    const cimgui_clib = cimgui_dep.artifact(cimgui_conf.clib_name);
     // imgui_clib.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
 
-    const imgui = b.addTranslateC(.{
+    const cimgui = b.addTranslateC(.{
         .target = target,
         .optimize = optimize,
         .root_source_file = cimgui_dep.path(b.fmt("{s}/cimgui.h", .{cimgui_conf.include_dir})),
@@ -213,11 +300,33 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
         .language = .cpp,
     });
 
-    to.root_module.addImport("cimgui", imgui.createModule());
+    to.root_module.addImport("cimgui", cimgui.createModule());
     to.root_module.addImport("win32", win32);
     to.root_module.addImport("imgui_c", imgui_c.createModule());
 
-    to.root_module.linkLibrary(imgui_clib);
+    to.root_module.linkLibrary(cimgui_clib);
     to.root_module.linkSystemLibrary("gdi32", .{});
     to.root_module.linkSystemLibrary("dwmapi", .{});
+    to.root_module.linkSystemLibrary("d3dcompiler_47", .{});
+}
+
+fn addReframeworkImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
+    const target = to.root_module.resolved_target orelse b.standardTargetOptions(.{
+        .default_target = .{ .os_tag = .windows },
+    });
+    const optimize = to.root_module.optimize orelse b.standardOptimizeOption(.{});
+
+    const win32 = (b.lazyDependency("win32", .{}) orelse return).module("win32");
+    win32.resolved_target = target;
+    win32.optimize = optimize;
+
+    const cimgui = b.addTranslateC(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("reframework/src/cimgui/cimgui.h"),
+    });
+    cimgui.defineCMacro("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
+
+    to.root_module.addImport("cimgui", cimgui.createModule());
+    to.root_module.addImport("win32", win32);
 }

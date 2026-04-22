@@ -1,6 +1,6 @@
 const std = @import("std");
 const api = @import("api.zig");
-const type_utils = @import("api/type_utils.zig");
+const type_utils = @import("type_utils.zig");
 
 const native = std.builtin.Endian.native;
 

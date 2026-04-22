@@ -9,19 +9,19 @@ pub inline fn handle(self: VmContext) API.REFrameworkVMContextHandle {
     return self.raw;
 }
 
-pub fn hasException(self: VmContext, sdk: Verified(API.REFrameworkSDKData, .{ .vm_context = .has_exception })) bool {
+pub inline fn hasException(self: VmContext, sdk: Verified(API.REFrameworkSDKData, .{ .vm_context = .has_exception })) bool {
     return sdk.safe().vm_context.safe().has_exception(self.handle());
 }
 
-pub fn unhandledException(self: VmContext, sdk: Verified(API.REFrameworkSDKData, .{ .vm_context = .unhandled_exception })) void {
+pub inline fn unhandledException(self: VmContext, sdk: Verified(API.REFrameworkSDKData, .{ .vm_context = .unhandled_exception })) void {
     sdk.safe().vm_context.safe().unhandled_exception(self.handle());
 }
 
-pub fn localFrameGc(self: VmContext, sdk: Verified(API.REFrameworkSDKData, .{ .vm_context = .local_frame_gc })) void {
+pub inline fn localFrameGc(self: VmContext, sdk: Verified(API.REFrameworkSDKData, .{ .vm_context = .local_frame_gc })) void {
     sdk.safe().vm_context.safe().local_frame_gc(self.handle());
 }
 
-pub fn cleanupAfterException(
+pub inline fn cleanupAfterException(
     self: VmContext,
     sdk: Verified(API.REFrameworkSDKData, .{ .vm_context = .cleanup_after_exception }),
     old_reference_count: i32,

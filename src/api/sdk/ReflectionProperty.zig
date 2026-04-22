@@ -9,15 +9,15 @@ pub inline fn handle(self: ReflectionProperty) API.REFrameworkReflectionProperty
     return self.raw;
 }
 
-pub fn getGetter(self: ReflectionProperty, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_property = .get_getter })) API.REFrameworkReflectionPropertyMethod {
+pub inline fn getGetter(self: ReflectionProperty, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_property = .get_getter })) API.REFrameworkReflectionPropertyMethod {
     return sdk.safe().reflection_property.safe().get_getter(self.handle());
 }
 
-pub fn isStatic(self: ReflectionProperty, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_property = .is_static })) bool {
+pub inline fn isStatic(self: ReflectionProperty, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_property = .is_static })) bool {
     return sdk.safe().reflection_property.safe().is_static(self.handle());
 }
 
-pub fn getSize(self: ReflectionProperty, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_property = .get_size })) u32 {
+pub inline fn getSize(self: ReflectionProperty, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_property = .get_size })) u32 {
     return sdk.safe().reflection_property.safe().get_size(self.handle());
 }
 

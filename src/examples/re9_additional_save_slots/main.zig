@@ -1,6 +1,8 @@
 const std = @import("std");
-const windows = std.os.windows;
 const re = @import("reframework");
+
+const windows = std.os.windows;
+
 const interop = re.interop;
 
 const max_save_games = 90;

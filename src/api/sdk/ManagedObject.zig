@@ -19,37 +19,37 @@ pub inline fn handle(self: ManagedObject) API.REFrameworkManagedObjectHandle {
     return self.raw;
 }
 
-pub fn addRef(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .add_ref })) void {
+pub inline fn addRef(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .add_ref })) void {
     sdk.safe().managed_object.safe().add_ref(self.handle());
 }
 
-pub fn release(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .release })) void {
+pub inline fn release(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .release })) void {
     sdk.safe().managed_object.safe().release(self.handle());
 }
 
-pub fn getTypeDefinition(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_type_definition })) ?TypeDefinition {
+pub inline fn getTypeDefinition(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_type_definition })) ?TypeDefinition {
     const result = sdk.safe().managed_object.safe().get_type_definition(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn isManagedObject(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .is_managed_object })) bool {
+pub inline fn isManagedObject(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .is_managed_object })) bool {
     return sdk.safe().managed_object.safe().is_managed_object(@ptrCast(self.handle()));
 }
 
-pub fn getRefCount(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_ref_count })) u32 {
+pub inline fn getRefCount(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_ref_count })) u32 {
     return sdk.safe().managed_object.safe().get_ref_count(self.handle());
 }
 
-pub fn getVmObjType(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_vm_obj_type })) VmObjType {
+pub inline fn getVmObjType(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_vm_obj_type })) VmObjType {
     return .fromU32(sdk.safe().managed_object.safe().get_vm_obj_type(self.handle()));
 }
 
-pub fn getTypeInfo(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_type_info })) ?TypeInfo {
+pub inline fn getTypeInfo(self: ManagedObject, sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_type_info })) ?TypeInfo {
     const result = sdk.safe().managed_object.safe().get_type_info(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getReflectionPropertyDescriptor(
+pub inline fn getReflectionPropertyDescriptor(
     self: ManagedObject,
     sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_reflection_property_descriptor }),
     name: [:0]const u8,
@@ -58,7 +58,7 @@ pub fn getReflectionPropertyDescriptor(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getReflectionMethodDescriptor(
+pub inline fn getReflectionMethodDescriptor(
     self: ManagedObject,
     sdk: Verified(API.REFrameworkSDKData, .{ .managed_object = .get_reflection_method_descriptor }),
     name: [:0]const u8,

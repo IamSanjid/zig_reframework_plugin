@@ -1,5 +1,6 @@
 /// Not tested should work in theory.
 /// 1-to-1 https://github.com/praydog/REFramework/blob/0a74333ac76774884724bbac2ad7fefba702b6a3/src/REFramework.cpp#L2233
+/// Contains some extra texture/resources for VR related, but we don't really use them.
 const std = @import("std");
 const d3d = @import("reframework").d3d;
 const win32 = @import("win32");

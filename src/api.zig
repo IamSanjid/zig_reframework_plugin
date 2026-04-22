@@ -24,11 +24,11 @@ pub const specs = @import("specs.zig");
 pub const VerifiedMinimal = Verified(API.REFrameworkPluginInitializeParam, specs.minimal);
 pub const VerifiedFull = Verified(API.REFrameworkPluginInitializeParam, .all_recursive);
 
-pub fn VerifiedSdk(comptime spec: anytype) type {
+pub inline fn VerifiedSdk(comptime spec: anytype) type {
     return Verified(API.REFrameworkSDKData, spec);
 }
 
-pub fn VerifiedParam(comptime spec: anytype) type {
+pub inline fn VerifiedParam(comptime spec: anytype) type {
     return Verified(API.REFrameworkPluginInitializeParam, spec);
 }
 
@@ -51,14 +51,14 @@ pub const Api = struct {
         return .{ .param = try VerifiedParamInit.init(param) };
     }
 
-    pub fn verifiedParam(
+    pub inline fn verifiedParam(
         self: *const Self,
         comptime spec: anytype,
     ) !Verified(API.REFrameworkPluginInitializeParam, spec) {
         return Verified(API.REFrameworkPluginInitializeParam, spec).init(self.param.native);
     }
 
-    pub fn verifiedSdk(
+    pub inline fn verifiedSdk(
         self: *const Self,
         comptime spec: anytype,
     ) !VerifiedSdk(spec) {
@@ -79,7 +79,7 @@ pub const Api = struct {
     /// Follows `printf` formatting, have to convert all the literals, and types
     /// into C primitive types or equivalents, eg. @as(c_int, 69) or some_z.ptr([:0]const u8).
     /// It's recommended to use std.fmt.bufPrintZ or equivalent and then pass the string ptr.
-    pub fn logError(self: *const Self, fmt: [:0]const u8, args: anytype) void {
+    pub inline fn logError(self: *const Self, fmt: [:0]const u8, args: anytype) void {
         const f = self.param.safe().functions.safe().log_error;
         @call(.auto, f, .{fmt.ptr} ++ args);
     }
@@ -87,7 +87,7 @@ pub const Api = struct {
     /// Follows `printf` formatting, have to convert all the literals, and types
     /// into C primitive types or equivalents, eg. @as(c_int, 69) or some_z.ptr([:0]const u8).
     /// It's recommended to use std.fmt.bufPrintZ or equivalent and then pass the string ptr.
-    pub fn logWarn(self: *const Self, fmt: [:0]const u8, args: anytype) void {
+    pub inline fn logWarn(self: *const Self, fmt: [:0]const u8, args: anytype) void {
         const f = self.param.safe().functions.safe().log_warn;
         @call(.auto, f, .{fmt.ptr} ++ args);
     }
@@ -95,12 +95,12 @@ pub const Api = struct {
     /// Follows `printf` formatting, have to convert all the literals, and types
     /// into C primitive types or equivalents, eg. @as(c_int, 69) or some_z.ptr([:0]const u8).
     /// It's recommended to use std.fmt.bufPrintZ or equivalent and then pass the string ptr.
-    pub fn logInfo(self: *const Self, fmt: [:0]const u8, args: anytype) void {
+    pub inline fn logInfo(self: *const Self, fmt: [:0]const u8, args: anytype) void {
         const f = self.param.safe().functions.safe().log_info;
         @call(.auto, f, .{fmt.ptr} ++ args);
     }
 
-    pub fn isDrawingUI(self: *const Self) bool {
+    pub inline fn isDrawingUI(self: *const Self) bool {
         return self.param.safe().functions.safe().is_drawing_ui();
     }
 };

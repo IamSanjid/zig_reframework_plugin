@@ -9,7 +9,7 @@ pub inline fn handle(self: ReflectionMethod) API.REFrameworkReflectionMethodHand
     return self.raw;
 }
 
-pub fn getFunction(self: ReflectionMethod, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_method = .get_function })) API.REFrameworkInvokeMethod {
+pub inline fn getFunction(self: ReflectionMethod, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_method = .get_function })) API.REFrameworkInvokeMethod {
     return sdk.safe().reflection_method.safe().get_function(self.handle());
 }
 

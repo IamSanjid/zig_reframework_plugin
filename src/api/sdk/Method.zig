@@ -18,11 +18,11 @@ pub const Parameter = struct {
 
     const Self = @This();
 
-    pub fn name(self: Self) [:0]const u8 {
+    pub inline fn name(self: Self) [:0]const u8 {
         return std.mem.span(self.raw.name);
     }
 
-    pub fn typeDefinition(self: Self) TypeDefinition {
+    pub inline fn typeDefinition(self: Self) TypeDefinition {
         return .{ .raw = self.raw.t };
     }
 };
@@ -50,7 +50,7 @@ pub fn invoke(
     return out;
 }
 
-pub fn invokeNoArgs(
+pub inline fn invokeNoArgs(
     self: Method,
     sdk: Verified(API.REFrameworkSDKData, .{ .method = .invoke }),
     thisptr: ?*anyopaque,
@@ -58,31 +58,31 @@ pub fn invokeNoArgs(
     return self.invoke(sdk, thisptr, &.{});
 }
 
-pub fn getFunctionRaw(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_function })) ?*anyopaque {
+pub inline fn getFunctionRaw(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_function })) ?*anyopaque {
     return sdk.safe().method.safe().get_function(self.handle());
 }
 
-pub fn getFunction(self: Method, FuncT: type, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_function })) ?*const FuncT {
+pub inline fn getFunction(self: Method, FuncT: type, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_function })) ?*const FuncT {
     const raw = self.getFunctionRaw(sdk) orelse return null;
     return @ptrCast(raw);
 }
 
-pub fn getName(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_name })) ?[:0]const u8 {
+pub inline fn getName(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_name })) ?[:0]const u8 {
     const value = sdk.safe().method.safe().get_name(self.handle()) orelse return null;
     return std.mem.span(value);
 }
 
-pub fn getDeclaringType(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_declaring_type })) ?TypeDefinition {
+pub inline fn getDeclaringType(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_declaring_type })) ?TypeDefinition {
     const result = sdk.safe().method.safe().get_declaring_type(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getReturnType(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_return_type })) ?TypeDefinition {
+pub inline fn getReturnType(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_return_type })) ?TypeDefinition {
     const result = sdk.safe().method.safe().get_return_type(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getNumParams(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_num_params })) u32 {
+pub inline fn getNumParams(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_num_params })) u32 {
     return sdk.safe().method.safe().get_num_params(self.handle());
 }
 
@@ -103,19 +103,19 @@ pub fn getParams(
     return out[0..out_count];
 }
 
-pub fn isStatic(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .is_static })) bool {
+pub inline fn isStatic(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .is_static })) bool {
     return sdk.safe().method.safe().is_static(self.handle());
 }
 
-pub fn getFlags(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_flags })) u16 {
+pub inline fn getFlags(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_flags })) u16 {
     return sdk.safe().method.safe().get_flags(self.handle());
 }
 
-pub fn getImplFlags(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_impl_flags })) u16 {
+pub inline fn getImplFlags(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_impl_flags })) u16 {
     return sdk.safe().method.safe().get_impl_flags(self.handle());
 }
 
-pub fn getInvokeId(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_invoke_id })) u32 {
+pub inline fn getInvokeId(self: Method, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_invoke_id })) u32 {
     return sdk.safe().method.safe().get_invoke_id(self.handle());
 }
 
@@ -160,7 +160,7 @@ fn postZigFnToC(comptime func: PostHookZigFn) API.REFPreHookFn {
     }.cFunc;
 }
 
-pub fn addHookC(
+pub inline fn addHookC(
     self: Method,
     sdkf: Verified(API.REFrameworkSDKFunctions, .add_hook),
     pre: API.REFPreHookFn,
@@ -186,7 +186,7 @@ pub fn addHook(
     return self.addHookC(sdkf, pre_c, post_c, ignore_jmp);
 }
 
-pub fn removeHook(
+pub inline fn removeHook(
     self: Method,
     sdkf: Verified(API.REFrameworkSDKFunctions, .remove_hook),
     hook_id: u32,

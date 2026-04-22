@@ -15,7 +15,7 @@ pub const Api = api.Api;
 
 pub const interop = @import("interop.zig");
 
-const type_utils = @import("api/type_utils.zig");
+const type_utils = @import("type_utils.zig");
 
 pub const PluginVersion = struct {
     gameName: ?[:0]const u8 = null,

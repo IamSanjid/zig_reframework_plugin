@@ -14,27 +14,27 @@ pub inline fn handle(self: Tdb) API.REFrameworkTDBHandle {
     return self.raw;
 }
 
-pub fn getNumModules(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_modules })) u32 {
+pub inline fn getNumModules(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_modules })) u32 {
     return sdk.safe().tdb.safe().get_num_modules(self.handle());
 }
 
-pub fn getNumTypes(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_types })) u32 {
+pub inline fn getNumTypes(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_types })) u32 {
     return sdk.safe().tdb.safe().get_num_types(self.handle());
 }
 
-pub fn getNumMethods(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_methods })) u32 {
+pub inline fn getNumMethods(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_methods })) u32 {
     return sdk.safe().tdb.safe().get_num_methods(self.handle());
 }
 
-pub fn getNumFields(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_fields })) u32 {
+pub inline fn getNumFields(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_fields })) u32 {
     return sdk.safe().tdb.safe().get_num_fields(self.handle());
 }
 
-pub fn getNumProperties(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_properties })) u32 {
+pub inline fn getNumProperties(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_num_properties })) u32 {
     return sdk.safe().tdb.safe().get_num_properties(self.handle());
 }
 
-pub fn getType(
+pub inline fn getType(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_type }),
     index: u32,
@@ -43,7 +43,7 @@ pub fn getType(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn findType(
+pub inline fn findType(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .find_type }),
     name: [:0]const u8,
@@ -52,7 +52,7 @@ pub fn findType(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn findTypeByFqn(
+pub inline fn findTypeByFqn(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .find_type_by_fqn }),
     fqn: u32,
@@ -61,7 +61,7 @@ pub fn findTypeByFqn(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getMethod(
+pub inline fn getMethod(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_method }),
     index: u32,
@@ -70,7 +70,7 @@ pub fn getMethod(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn findMethod(
+pub inline fn findMethod(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .find_method }),
     type_name: [:0]const u8,
@@ -80,7 +80,7 @@ pub fn findMethod(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getField(
+pub inline fn getField(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_field }),
     index: u32,
@@ -89,7 +89,7 @@ pub fn getField(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn findField(
+pub inline fn findField(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .find_field }),
     type_name: [:0]const u8,
@@ -99,7 +99,7 @@ pub fn findField(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getProperty(
+pub inline fn getProperty(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_property }),
     index: u32,
@@ -108,7 +108,7 @@ pub fn getProperty(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getModule(
+pub inline fn getModule(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_module }),
     index: u32,

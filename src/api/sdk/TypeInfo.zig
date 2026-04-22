@@ -13,29 +13,29 @@ pub inline fn handle(self: TypeInfo) API.REFrameworkTypeInfoHandle {
     return self.raw;
 }
 
-pub fn getName(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_name })) ?[:0]const u8 {
+pub inline fn getName(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_name })) ?[:0]const u8 {
     const value = sdk.safe().type_info.safe().get_name(self.handle()) orelse return null;
     return std.mem.span(value);
 }
 
-pub fn getTypeDefinition(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_type_definition })) ?TypeDefinition {
+pub inline fn getTypeDefinition(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_type_definition })) ?TypeDefinition {
     const result = sdk.safe().type_info.safe().get_type_definition(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn isClrType(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .is_clr_type })) bool {
+pub inline fn isClrType(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .is_clr_type })) bool {
     return sdk.safe().type_info.safe().is_clr_type(self.handle());
 }
 
-pub fn isSingleton(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .is_singleton })) bool {
+pub inline fn isSingleton(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .is_singleton })) bool {
     return sdk.safe().type_info.safe().is_singleton(self.handle());
 }
 
-pub fn getSingletonInstance(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_singleton_instance })) ?*anyopaque {
+pub inline fn getSingletonInstance(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_singleton_instance })) ?*anyopaque {
     return sdk.safe().type_info.safe().get_singleton_instance(self.handle());
 }
 
-pub fn getReflectionPropertyDescriptor(
+pub inline fn getReflectionPropertyDescriptor(
     self: TypeInfo,
     sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_reflection_property_descriptor }),
     name: [:0]const u8,
@@ -44,7 +44,7 @@ pub fn getReflectionPropertyDescriptor(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getReflectionMethodDescriptor(
+pub inline fn getReflectionMethodDescriptor(
     self: TypeInfo,
     sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_reflection_method_descriptor }),
     name: [:0]const u8,
@@ -53,15 +53,15 @@ pub fn getReflectionMethodDescriptor(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getDeserializerFn(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_deserializer_fn })) ?*anyopaque {
+pub inline fn getDeserializerFn(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_deserializer_fn })) ?*anyopaque {
     return sdk.safe().type_info.safe().get_deserializer_fn(self.handle());
 }
 
-pub fn getParent(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_parent })) ?TypeInfo {
+pub inline fn getParent(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_parent })) ?TypeInfo {
     const result = sdk.safe().type_info.safe().get_parent(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getCrc(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_crc })) u32 {
+pub inline fn getCrc(self: TypeInfo, sdk: Verified(API.REFrameworkSDKData, .{ .type_info = .get_crc })) u32 {
     return sdk.safe().type_info.safe().get_crc(self.handle());
 }

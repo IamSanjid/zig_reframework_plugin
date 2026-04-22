@@ -21,28 +21,28 @@ pub inline fn handle(self: TypeDefinition) API.REFrameworkTypeDefinitionHandle {
     return self.raw;
 }
 
-pub fn getIndex(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_index })) u32 {
+pub inline fn getIndex(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_index })) u32 {
     return sdk.safe().type_definition.safe().get_index(self.handle());
 }
 
-pub fn getSize(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_size })) u32 {
+pub inline fn getSize(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_size })) u32 {
     return sdk.safe().type_definition.safe().get_size(self.handle());
 }
 
-pub fn getValueTypeSize(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_valuetype_size })) u32 {
+pub inline fn getValueTypeSize(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_valuetype_size })) u32 {
     return sdk.safe().type_definition.safe().get_valuetype_size(self.handle());
 }
 
-pub fn getFqn(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_fqn })) u32 {
+pub inline fn getFqn(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_fqn })) u32 {
     return sdk.safe().type_definition.safe().get_fqn(self.handle());
 }
 
-pub fn getName(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_name })) ?[:0]const u8 {
+pub inline fn getName(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_name })) ?[:0]const u8 {
     const value = sdk.safe().type_definition.safe().get_name(self.handle()) orelse return null;
     return std.mem.span(value);
 }
 
-pub fn getNamespace(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_namespace })) ?[:0]const u8 {
+pub inline fn getNamespace(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_namespace })) ?[:0]const u8 {
     const value = sdk.safe().type_definition.safe().get_namespace(self.handle()) orelse return null;
     return std.mem.span(value);
 }
@@ -91,27 +91,27 @@ pub fn getFullNameAlloc(
     }
 }
 
-pub fn hasFieldptrOffset(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .has_fieldptr_offset })) bool {
+pub inline fn hasFieldptrOffset(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .has_fieldptr_offset })) bool {
     return sdk.safe().type_definition.safe().has_fieldptr_offset(self.handle());
 }
 
-pub fn getFieldptrOffset(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_fieldptr_offset })) i32 {
+pub inline fn getFieldptrOffset(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_fieldptr_offset })) i32 {
     return sdk.safe().type_definition.safe().get_fieldptr_offset(self.handle());
 }
 
-pub fn getNumMethods(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_num_methods })) u32 {
+pub inline fn getNumMethods(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_num_methods })) u32 {
     return sdk.safe().type_definition.safe().get_num_methods(self.handle());
 }
 
-pub fn getNumFields(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_num_fields })) u32 {
+pub inline fn getNumFields(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_num_fields })) u32 {
     return sdk.safe().type_definition.safe().get_num_fields(self.handle());
 }
 
-pub fn getNumProperties(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_num_properties })) u32 {
+pub inline fn getNumProperties(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_num_properties })) u32 {
     return sdk.safe().type_definition.safe().get_num_properties(self.handle());
 }
 
-pub fn isDerivedFrom(
+pub inline fn isDerivedFrom(
     self: TypeDefinition,
     sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_derived_from }),
     other: TypeDefinition,
@@ -119,7 +119,7 @@ pub fn isDerivedFrom(
     return sdk.safe().type_definition.safe().is_derived_from(self.handle(), other.handle());
 }
 
-pub fn isDerivedFromByName(
+pub inline fn isDerivedFromByName(
     self: TypeDefinition,
     sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_derived_from_by_name }),
     name: [:0]const u8,
@@ -127,32 +127,32 @@ pub fn isDerivedFromByName(
     return sdk.safe().type_definition.safe().is_derived_from_by_name(self.handle(), name.ptr);
 }
 
-pub fn isValueType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_valuetype })) bool {
+pub inline fn isValueType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_valuetype })) bool {
     return sdk.safe().type_definition.safe().is_valuetype(self.handle());
 }
 
-pub fn isEnum(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_enum })) bool {
+pub inline fn isEnum(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_enum })) bool {
     return sdk.safe().type_definition.safe().is_enum(self.handle());
 }
 
-pub fn isByRef(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_by_ref })) bool {
+pub inline fn isByRef(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_by_ref })) bool {
     return sdk.safe().type_definition.safe().is_by_ref(self.handle());
 }
 
-pub fn isPointer(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_pointer })) bool {
+pub inline fn isPointer(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_pointer })) bool {
     return sdk.safe().type_definition.safe().is_pointer(self.handle());
 }
 
-pub fn isPrimitive(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_primitive })) bool {
+pub inline fn isPrimitive(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .is_primitive })) bool {
     return sdk.safe().type_definition.safe().is_primitive(self.handle());
 }
 
-pub fn getVmObjType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_vm_obj_type })) VmObjType {
+pub inline fn getVmObjType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_vm_obj_type })) VmObjType {
     const result = sdk.safe().type_definition.safe().get_vm_obj_type(self.handle());
     return .fromU32(@intCast(result));
 }
 
-pub fn findMethod(
+pub inline fn findMethod(
     self: TypeDefinition,
     sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .find_method }),
     name: [:0]const u8,
@@ -161,7 +161,7 @@ pub fn findMethod(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn findField(
+pub inline fn findField(
     self: TypeDefinition,
     sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .find_field }),
     name: [:0]const u8,
@@ -170,7 +170,7 @@ pub fn findField(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn findProperty(
+pub inline fn findProperty(
     self: TypeDefinition,
     sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .find_property }),
     name: [:0]const u8,
@@ -213,18 +213,18 @@ pub fn getFields(
     return out[0..out_count];
 }
 
-pub fn getInstance(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_instance })) ?*anyopaque {
+pub inline fn getInstance(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_instance })) ?*anyopaque {
     return sdk.safe().type_definition.safe().get_instance(self.handle());
 }
 
-pub fn createInstanceDeprecated(
+pub inline fn createInstanceDeprecated(
     self: TypeDefinition,
     sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .create_instance_deprecated }),
 ) ?*anyopaque {
     return sdk.safe().type_definition.safe().create_instance_deprecated(self.handle());
 }
 
-pub fn createInstance(
+pub inline fn createInstance(
     self: TypeDefinition,
     sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .create_instance }),
     flags: CreateInstanceFlags,
@@ -233,27 +233,27 @@ pub fn createInstance(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getParentType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_parent_type })) ?TypeDefinition {
+pub inline fn getParentType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_parent_type })) ?TypeDefinition {
     const result = sdk.safe().type_definition.safe().get_parent_type(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getDeclaringType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_declaring_type })) ?TypeDefinition {
+pub inline fn getDeclaringType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_declaring_type })) ?TypeDefinition {
     const result = sdk.safe().type_definition.safe().get_declaring_type(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getUnderlyingType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_underlying_type })) ?TypeDefinition {
+pub inline fn getUnderlyingType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_underlying_type })) ?TypeDefinition {
     const result = sdk.safe().type_definition.safe().get_underlying_type(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getTypeInfo(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_type_info })) ?TypeInfo {
+pub inline fn getTypeInfo(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_type_info })) ?TypeInfo {
     const result = sdk.safe().type_definition.safe().get_type_info(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn getRuntimeType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_runtime_type })) ?ManagedObject {
+pub inline fn getRuntimeType(self: TypeDefinition, sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_runtime_type })) ?ManagedObject {
     const result = sdk.safe().type_definition.safe().get_runtime_type(self.handle());
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }

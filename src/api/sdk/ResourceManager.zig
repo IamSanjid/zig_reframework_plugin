@@ -11,7 +11,7 @@ pub inline fn handle(self: ResourceManager) API.REFrameworkResourceManagerHandle
     return self.raw;
 }
 
-pub fn createResource(
+pub inline fn createResource(
     self: ResourceManager,
     sdk: Verified(API.REFrameworkSDKData, .{ .resource_manager = .create_resource }),
     type_name: [:0]const u8,
@@ -21,7 +21,7 @@ pub fn createResource(
     return if (result) |value| .{ .raw = @ptrCast(value) } else null;
 }
 
-pub fn createUserdata(
+pub inline fn createUserdata(
     self: ResourceManager,
     sdk: Verified(API.REFrameworkSDKData, .{ .resource_manager = .create_userdata }),
     type_name: [:0]const u8,
