@@ -61,6 +61,7 @@ const REFrameworkExamples = REFrameworkExamplesT(.{
     .re9_basic,
     .re9_additional_save_slots,
     .re_imgui,
+    .re_imgui_custom,
 });
 
 pub fn build(b: *std.Build) void {
@@ -181,7 +182,7 @@ fn re9_basic_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: 
             },
         }),
     });
-    addImGuiToExample(b, re9_basic_plugin);
+    addReframeworkImGuiToExample(b, re9_basic_plugin);
 
     b.installArtifact(re9_basic_plugin);
 }
@@ -233,6 +234,52 @@ fn re_imgui_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     addReframeworkImGuiToExample(b, re_imgui_plugin);
 
     b.installArtifact(re_imgui_plugin);
+}
+
+fn re_imgui_custom_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const re_imgui_custom_plugin = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "re_imgui_custom",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/re_imgui_custom/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "reframework",
+                    .module = reframework(b, .{
+                        .d3d = .dx11_dx12,
+                        .target = target,
+                        .optimize = optimize,
+                    }) orelse return,
+                },
+            },
+        }),
+    });
+    addImGuiToExample(b, re_imgui_custom_plugin);
+
+    b.installArtifact(re_imgui_custom_plugin);
+}
+
+fn addReframeworkImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
+    const target = to.root_module.resolved_target orelse b.standardTargetOptions(.{
+        .default_target = .{ .os_tag = .windows },
+    });
+    const optimize = to.root_module.optimize orelse b.standardOptimizeOption(.{});
+
+    const win32 = (b.lazyDependency("win32", .{}) orelse return).module("win32");
+    win32.resolved_target = target;
+    win32.optimize = optimize;
+
+    const cimgui = b.addTranslateC(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("reframework/src/cimgui/cimgui.h"),
+    });
+    cimgui.defineCMacro("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
+
+    to.root_module.addImport("cimgui", cimgui.createModule());
+    to.root_module.addImport("win32", win32);
 }
 
 fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
@@ -308,25 +355,4 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
     to.root_module.linkSystemLibrary("gdi32", .{});
     to.root_module.linkSystemLibrary("dwmapi", .{});
     to.root_module.linkSystemLibrary("d3dcompiler_47", .{});
-}
-
-fn addReframeworkImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
-    const target = to.root_module.resolved_target orelse b.standardTargetOptions(.{
-        .default_target = .{ .os_tag = .windows },
-    });
-    const optimize = to.root_module.optimize orelse b.standardOptimizeOption(.{});
-
-    const win32 = (b.lazyDependency("win32", .{}) orelse return).module("win32");
-    win32.resolved_target = target;
-    win32.optimize = optimize;
-
-    const cimgui = b.addTranslateC(.{
-        .target = target,
-        .optimize = optimize,
-        .root_source_file = b.path("reframework/src/cimgui/cimgui.h"),
-    });
-    cimgui.defineCMacro("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
-
-    to.root_module.addImport("cimgui", cimgui.createModule());
-    to.root_module.addImport("win32", win32);
 }

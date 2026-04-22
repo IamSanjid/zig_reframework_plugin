@@ -149,6 +149,9 @@ fn onPresent() void {
 
 comptime {
     re.initPlugin(init, .{
+        .requiredVersion = .{
+            .gameName = "RE9",
+        },
         .onPresent = onPresent,
     });
 }

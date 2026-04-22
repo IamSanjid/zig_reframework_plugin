@@ -19,16 +19,11 @@ const type_utils = @import("type_utils.zig");
 
 pub const PluginVersion = struct {
     gameName: ?[:0]const u8 = null,
-    major: u32,
-    minor: u32,
-    patch: u32,
+    major: u32 = API_C.REFRAMEWORK_PLUGIN_VERSION_MAJOR,
+    minor: u32 = API_C.REFRAMEWORK_PLUGIN_VERSION_MINOR,
+    patch: u32 = API_C.REFRAMEWORK_PLUGIN_VERSION_PATCH,
 
-    pub const default: @This() = .{
-        .gameName = null,
-        .major = API_C.REFRAMEWORK_PLUGIN_VERSION_MAJOR,
-        .minor = API_C.REFRAMEWORK_PLUGIN_VERSION_MINOR,
-        .patch = API_C.REFRAMEWORK_PLUGIN_VERSION_PATCH,
-    };
+    pub const default: @This() = .{};
 
     pub fn from(gameName: ?[:0]const u8, semantic: std.SemanticVersion) @This() {
         .{

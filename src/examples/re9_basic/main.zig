@@ -4,17 +4,12 @@ const re = @import("reframework");
 
 const win32 = @import("win32");
 const cimgui = @import("cimgui");
-const imgui_c = @import("imgui_c");
-
-const d3d12_imgui_render = @import("d3d12_imgui_render.zig");
-const d3d11_imgui_render = @import("d3d11_imgui_render.zig");
 
 const managed_types = @import("managed_types.zig");
 
 const windows = std.os.windows;
 
 const interop = re.interop;
-const d3d = re.d3d;
 
 const State = struct {
     api: re.api.Api,
@@ -210,112 +205,74 @@ fn applyInfiniteAmmoHack() !void {
     // }
 }
 
-var imgui_initialized: bool = false;
+const cimgui_dll = struct {
+    var igSetCurrentContext: *const fn (ctx: ?*cimgui.ImGuiContext) callconv(.c) void = undefined;
+    var igSetAllocatorFunctions: *const fn (
+        alloc_func: cimgui.ImGuiMemAllocFunc,
+        free_func: cimgui.ImGuiMemFreeFunc,
+        user_data: ?*anyopaque,
+    ) callconv(.c) void = undefined;
+    var igSetNextItemOpen: *const fn (is_open: bool, cond: cimgui.ImGuiCond) callconv(.c) void = undefined;
+    var igCollapsingHeader_BoolPtr: *const fn (
+        label: [*c]const u8,
+        p_visible: [*c]bool,
+        flags: cimgui.ImGuiTreeNodeFlags,
+    ) callconv(.c) bool = undefined;
+    var igText: *const fn (fmt: [*c]const u8, ...) callconv(.c) void = undefined;
+    var igSeparatorText: *const fn (label: [*c]const u8) callconv(.c) void = undefined;
+    var igCheckbox: *const fn (label: [*c]const u8, v: [*c]bool) callconv(.c) bool = undefined;
 
-fn initImGui() !void {
-    if (imgui_initialized) return;
+    var cimgui_dll_module: windows.HINSTANCE = undefined;
 
-    if (!cimgui.igDebugCheckVersionAndDataLayout(
-        cimgui.IMGUI_VERSION,
-        @sizeOf(cimgui.ImGuiIO),
-        @sizeOf(cimgui.ImGuiStyle),
-        @sizeOf(cimgui.ImVec2),
-        @sizeOf(cimgui.ImVec4),
-        @sizeOf(cimgui.ImDrawVert),
-        @sizeOf(cimgui.ImDrawIdx),
-    )) {
-        return error.ImGuiVersionCheckFailed;
+    var initialized: bool = false;
+
+    const cimgui_dll_name = "cimgui.dll";
+    fn init() !void {
+        if (initialized) return;
+
+        cimgui_dll_module = win32.system.library_loader.LoadLibraryExW(
+            std.unicode.utf8ToUtf16LeStringLiteral(cimgui_dll_name),
+            null,
+            .{},
+        ) orelse return error.LoadLibraryFailed;
+
+        igSetCurrentContext = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSetCurrentContext") orelse
+            return error.igSetCurrentContextNotFound);
+        igSetAllocatorFunctions = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSetAllocatorFunctions") orelse
+            return error.igSetAllocatorFunctionsNotFound);
+        igSetNextItemOpen = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSetNextItemOpen") orelse
+            return error.igSetNextItemOpenNotFound);
+        igCollapsingHeader_BoolPtr = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igCollapsingHeader_BoolPtr") orelse
+            return error.igCollapsingHeader_BoolPtrNotFound);
+        igText = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igText") orelse
+            return error.igTextNotFound);
+        igSeparatorText = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSeparatorText") orelse
+            return error.igSeparatorTextNotFound);
+        igCheckbox = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igCheckbox") orelse
+            return error.igCheckboxNotFound);
+
+        initialized = true;
     }
-    if (cimgui.igCreateContext(null) == null) return error.ImGuiCreateContextFailed;
-
-    cimgui.igGetIO().*.IniFilename = "re9_basic.ini";
-    cimgui.igGetIO().*.ConfigFlags |= cimgui.ImGuiConfigFlags_NoMouseCursorChange;
-
-    const param = try g_state.api.verifiedParam(.{ .renderer_data = .{.renderer_type} });
-
-    g_state.renderer_type = .fromU32(@intCast(param.safe().renderer_data.safe().renderer_type));
-
-    switch (g_state.renderer_type) {
-        .d3d11 => {
-            var d3d11: d3d.D3D11 = .init(try d3d.D3D11.VerifiedParam.init(param.native));
-            g_state.hwnd = (try d3d11.getHwnd()) orelse return error.GetHwndFailed;
-            if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
-            try d3d11_imgui_render.init(d3d11);
-        },
-        .d3d12 => {
-            var d3d12: d3d.D3D12 = .init(try d3d.D3D12.VerifiedParam.init(param.native));
-            g_state.hwnd = (try d3d12.getHwnd()) orelse return error.GetHwndFailed;
-            if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
-            try d3d12_imgui_render.init(d3d12);
-        },
-        else => return,
-    }
-
-    imgui_initialized = true;
-}
-
-const ui_state = struct {
-    var show_ui: bool = true;
-    var focused_any: bool = false;
 };
 
 fn drawUI() void {
-    if (!ui_state.show_ui) {
+    cimgui_dll.igSetNextItemOpen(false, cimgui.ImGuiCond_FirstUseEver);
+    if (!cimgui_dll.igCollapsingHeader_BoolPtr("RE9 Basic in Zig", null, 0)) {
         return;
     }
-    _ = cimgui.igBegin("RE9 Basic in Zig!", &ui_state.show_ui, 0);
 
-    cimgui.igText("This is a basic REFramework plugin example written in Zig!");
+    cimgui_dll.igText("This is a basic REFramework plugin example written in Zig!");
 
-    cimgui.igSeparatorText("Basic Hacks");
+    cimgui_dll.igSeparatorText("Basic Hacks");
 
-    _ = cimgui.igCheckbox("Invincibility", &current_hack_state.invincible);
-    _ = cimgui.igCheckbox("Infinite Gun Ammo", &current_hack_state.infinite_gun);
-    _ = cimgui.igCheckbox("Infinite Axe Durability", &current_hack_state.infinite_axe);
-    _ = cimgui.igCheckbox("Infinite Rocket Ammo", &current_hack_state.infinite_rocket);
-    _ = cimgui.igCheckbox("No Ammo Consumption", &current_hack_state.no_ammo_consumption);
-
-    _ = cimgui.igEnd();
-
-    ui_state.focused_any = cimgui.igIsWindowFocused(cimgui.ImGuiFocusedFlags_AnyWindow);
+    _ = cimgui_dll.igCheckbox("Invincibility", &current_hack_state.invincible);
+    _ = cimgui_dll.igCheckbox("Infinite Gun Ammo", &current_hack_state.infinite_gun);
+    _ = cimgui_dll.igCheckbox("Infinite Axe Durability", &current_hack_state.infinite_axe);
+    _ = cimgui_dll.igCheckbox("Infinite Rocket Ammo", &current_hack_state.infinite_rocket);
+    _ = cimgui_dll.igCheckbox("No Ammo Consumption", &current_hack_state.no_ammo_consumption);
 }
 
 fn onNewFrame() !void {
-    // only draw UI when the main Plugin Menu is being drawn.
-    if (g_state.api.isDrawingUI()) {
-        try initImGui();
-
-        if (!imgui_initialized) {
-            return;
-        }
-
-        if (g_state.renderer_type == .d3d11) {
-            imgui_c.ImGui_ImplDX11_NewFrame();
-            imgui_c.ImGui_ImplWin32_NewFrame();
-
-            cimgui.igNewFrame();
-
-            drawUI();
-
-            cimgui.igEndFrame();
-            cimgui.igRender();
-
-            try d3d11_imgui_render.render();
-        } else if (g_state.renderer_type == .d3d12) {
-            imgui_c.ImGui_ImplDX12_NewFrame();
-            imgui_c.ImGui_ImplWin32_NewFrame();
-
-            cimgui.igNewFrame();
-
-            drawUI();
-
-            cimgui.igEndFrame();
-            cimgui.igRender();
-
-            try d3d12_imgui_render.render();
-        }
-    }
-
     {
         try g_state.api.lockLua(g_state.io);
         defer g_state.api.unlockLua(g_state.io);
@@ -335,92 +292,8 @@ fn onPresent() void {
     };
 }
 
-extern "c" fn ImGui_ImplWin32_WndProcHandler(
-    hWnd: windows.HWND,
-    msg: windows.UINT,
-    wParam: win32.foundation.WPARAM,
-    lParam: windows.LPARAM,
-) callconv(.c) win32.foundation.LRESULT;
-
-fn onMessage(hwnd: windows.HWND, msg: windows.UINT, wparam: win32.foundation.WPARAM, lparam: windows.LPARAM) bool {
-    if (!imgui_initialized) {
-        return true;
-    }
-    const wmsg = win32.ui.windows_and_messaging;
-    const ui_input = win32.ui.input;
-
-    const is_mouse_moving: bool = blk: {
-        if (msg == wmsg.WM_INPUT) {
-            const raw_input_header_sz: u32 = @truncate(@sizeOf(ui_input.RAWINPUTHEADER));
-            var size: u32 = @truncate(@sizeOf(win32.ui.input.RAWINPUT));
-            var raw: ui_input.RAWINPUT = std.mem.zeroes(ui_input.RAWINPUT);
-
-            // obtain size?
-            const lparam_s: usize = @intCast(lparam);
-            _ = ui_input.GetRawInputData(@ptrFromInt(lparam_s), ui_input.RID_INPUT, null, &size, raw_input_header_sz);
-            _ = ui_input.GetRawInputData(@ptrFromInt(lparam_s), ui_input.RID_INPUT, @ptrCast(&raw), &size, raw_input_header_sz);
-
-            if (raw.header.dwType == @intFromEnum(ui_input.RIM_TYPEMOUSE)) {
-                break :blk raw.data.mouse.lLastX > 0 or raw.data.mouse.lLastY > 0;
-            }
-        }
-
-        break :blk false;
-    };
-
-    _ = ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
-
-    if (ui_state.show_ui) {
-        const io = cimgui.igGetIO();
-
-        if (msg == wmsg.WM_INPUT and wparam & 0xff == wmsg.RIM_INPUTSINK) {
-            return false;
-        }
-
-        // https://github.com/praydog/REFramework/blob/0a74333ac76774884724bbac2ad7fefba702b6a3/src/REFramework.cpp#L1329
-
-        const forcefully_allowed_messages = [_]windows.UINT{
-            wmsg.WM_DEVICECHANGE,
-            wmsg.WM_SHOWWINDOW,
-            wmsg.WM_ACTIVATE,
-            wmsg.WM_ACTIVATEAPP,
-            wmsg.WM_CLOSE,
-            wmsg.WM_DPICHANGED,
-            wmsg.WM_SIZING,
-            wmsg.WM_MOUSEACTIVATE,
-        };
-
-        if (std.mem.findScalar(windows.UINT, &forcefully_allowed_messages, msg) == null) {
-            if (ui_state.focused_any) {
-                if (io.*.WantCaptureMouse or io.*.WantCaptureKeyboard or io.*.WantTextInput) {
-                    return false;
-                }
-            } else {
-                if (!is_mouse_moving and (io.*.WantCaptureMouse or io.*.WantCaptureKeyboard or io.*.WantTextInput)) {
-                    return false;
-                }
-            }
-        }
-    }
-
-    return true;
-}
-
 fn onDeviceReset() void {
     std.log.info("Device reset detected, clearing interop cache", .{});
-
-    imgui_initialized = false;
-    switch (g_state.renderer_type) {
-        .d3d11 => {
-            imgui_c.ImGui_ImplDX11_Shutdown();
-            d3d11_imgui_render.deinit();
-        },
-        .d3d12 => {
-            imgui_c.ImGui_ImplDX12_Shutdown();
-            d3d12_imgui_render.deinit();
-        },
-        else => {},
-    }
 
     g_state.interop_cache.deinit();
     threaded.deinit();
@@ -430,9 +303,30 @@ fn onDeviceReset() void {
 
 comptime {
     re.initPlugin(init, .{
+        .requiredVersion = .{
+            .gameName = "RE9",
+        },
         .onPresent = onPresent,
         .onDeviceReset = onDeviceReset,
-        .onMessage = onMessage,
+        .onImGuiDrawUI = struct {
+            fn func(data: *re.API_C.REFImGuiFrameCbData) void {
+                @setRuntimeSafety(false);
+
+                cimgui_dll.init() catch |e| {
+                    std.log.err("Dynamic cimgui initialization failed: {}", .{e});
+                    return;
+                };
+
+                cimgui_dll.igSetCurrentContext(@ptrCast(@alignCast(data.context)));
+                cimgui_dll.igSetAllocatorFunctions(
+                    @ptrCast(@alignCast(data.malloc_fn)),
+                    @ptrCast(@alignCast(data.free_fn)),
+                    data.user_data,
+                );
+
+                drawUI();
+            }
+        }.func,
     });
 }
 
@@ -450,9 +344,6 @@ pub fn DllMain(
             threaded = .init(g_state.allocator, .{});
             g_state.io = threaded.io();
             g_state.interop_cache = .init(g_state.allocator, g_state.io);
-
-            d3d11_imgui_render.g_state.io = g_state.io;
-            d3d12_imgui_render.g_state.io = g_state.io;
         },
         win32.system.system_services.DLL_PROCESS_DETACH => {},
         else => {},
