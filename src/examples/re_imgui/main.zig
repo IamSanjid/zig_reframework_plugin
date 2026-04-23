@@ -10,8 +10,18 @@ const interop = re.interop;
 
 var g_api: re.Api = undefined;
 
+const sdk_specs = .{
+    .functions = .{
+        .get_managed_singletons,
+        .get_native_singletons,
+    },
+    .type_info = .get_name,
+};
+var g_sdk: re.api.VerifiedSdk(sdk_specs) = undefined;
+
 fn init(api: re.api.Api) !void {
     g_api = api;
+    g_sdk = .fo(try api.verifiedSdk(sdk_specs));
 }
 
 /// There are two ways to use REFramewrork's ImGui rendering in a plugin:
@@ -65,6 +75,10 @@ const cimgui_dll = struct {
     }
 };
 
+inline fn asCstr(str: anytype) [*:0]const u8 {
+    return str.ptr;
+}
+
 fn onImGuiDrawUI(data: *re.API_C.REFImGuiFrameCbData) void {
     @setRuntimeSafety(false);
 
@@ -86,10 +100,56 @@ fn onImGuiDrawUI(data: *re.API_C.REFImGuiFrameCbData) void {
     }
     _ = cimgui_dll.igText("This is an example of using ImGui in a REFramework plugin written in Zig.");
     _ = cimgui_dll.igText("This uses REFramework's ImGui rendering, we don't need to implement our own renderer logic.");
+
+    if (cimgui_dll.igCollapsingHeader_BoolPtr("Managed Singletons", null, 0)) {
+        var out: [512]re.sdk.ManagedSingleton = undefined;
+        if (re.sdk.getManagedSingletons(.fo(g_sdk), &out)) |singletons| {
+            for (singletons) |singleton| {
+                _ = cimgui_dll.igText("- %s", asCstr(singleton.typeInfo().getName(.fo(g_sdk)) orelse "Unknown"));
+            }
+        } else |e| {
+            cimgui_dll.igText("Failed to get managed singletons: %s", asCstr(@errorName(e)));
+        }
+    }
+
+    if (cimgui_dll.igCollapsingHeader_BoolPtr("Native Singletons", null, 0)) {
+        var out: [512]re.sdk.NativeSingleton = undefined;
+        if (re.sdk.getNativeSingletons(.fo(g_sdk), &out)) |singletons| {
+            for (singletons) |singleton| {
+                _ = cimgui_dll.igText("- %s", asCstr(singleton.name()));
+            }
+        } else |e| {
+            cimgui_dll.igText("Failed to get native singletons: %s", asCstr(@errorName(e)));
+        }
+    }
+}
+
+var pre_called: bool = false;
+fn onPreBeginRendering() void {
+    if (pre_called) {
+        return;
+    }
+    g_api.logInfo("onPreBeginRendering called!", .{});
+    pre_called = true;
+}
+
+var post_called: bool = false;
+fn onPostEndRendering() void {
+    if (!post_called) {
+        return;
+    }
+    g_api.logInfo("onPostEndRendering called!", .{});
+    post_called = true;
 }
 
 comptime {
     re.initPlugin(init, .{
         .onImGuiDrawUI = onImGuiDrawUI,
+        .onPreApplicationEntry = &.{
+            .{ "BeginRendering", onPreBeginRendering },
+        },
+        .onPostApplicationEntry = &.{
+            .{ "EndRendering", onPostEndRendering },
+        },
     });
 }

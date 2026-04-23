@@ -40,10 +40,13 @@ pub inline fn initPlugin(
     comptime options: struct {
         requiredVersion: PluginVersion = .default,
         onPresent: ?fn () void = null,
+        onPreApplicationEntry: []const struct { [:0]const u8, (fn () void) } = &.{},
+        onPostApplicationEntry: []const struct { [:0]const u8, (fn () void) } = &.{},
         onDeviceReset: ?fn () void = null,
         onMessage: ?fn (windows.HWND, windows.UINT, usize, windows.LPARAM) bool = null,
         onImGuiFrame: ?fn (*API_C.REFImGuiFrameCbData) void = null,
         onImGuiDrawUI: ?fn (*API_C.REFImGuiFrameCbData) void = null,
+        onPreGuiDrawElement: ?fn (gui_element: ?*anyopaque, primitive_context: ?*anyopaque) bool = null,
     },
 ) void {
     const CWrapped = struct {
@@ -57,6 +60,26 @@ pub inline fn initPlugin(
                     }
                 }.func)) {
                     api_instance.logError("Failed to set onPresent callback!", .{});
+                }
+            }
+
+            inline for (options.onPreApplicationEntry) |preEntry| {
+                if (!api_instance.param.safe().functions.safe().on_pre_application_entry(preEntry.@"0".ptr, &struct {
+                    fn func(...) callconv(.c) void {
+                        return preEntry.@"1"();
+                    }
+                }.func)) {
+                    api_instance.logError("Failed to set onPreApplicationEntry callback for %s!", .{preEntry.@"0".ptr});
+                }
+            }
+
+            inline for (options.onPostApplicationEntry) |postEntry| {
+                if (!api_instance.param.safe().functions.safe().on_post_application_entry(postEntry.@"0".ptr, &struct {
+                    fn func(...) callconv(.c) void {
+                        return postEntry.@"1"();
+                    }
+                }.func)) {
+                    api_instance.logError("Failed to set onPostApplicationEntry callback for %s!", .{postEntry.@"0".ptr});
                 }
             }
 
@@ -99,6 +122,16 @@ pub inline fn initPlugin(
                     }
                 }.func)) {
                     api_instance.logError("Failed to set onImGuiDraw callback!", .{});
+                }
+            }
+
+            if (options.onPreGuiDrawElement) |f| {
+                if (!api_instance.param.safe().functions.safe().on_pre_gui_draw_element(&struct {
+                    fn func(gui_element: ?*anyopaque, primitive_context: ?*anyopaque) callconv(.c) bool {
+                        return f(gui_element, primitive_context);
+                    }
+                }.func)) {
+                    api_instance.logError("Failed to set onPreGuiDrawElement callback!", .{});
                 }
             }
 

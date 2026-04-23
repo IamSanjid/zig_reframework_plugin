@@ -96,8 +96,8 @@ fn newFrame() !void {
         return;
     }
 
-    try g_state.api.lockLua(g_state.io);
-    defer g_state.api.unlockLua(g_state.io);
+    g_state.api.lockLua();
+    defer g_state.api.unlockLua();
 
     const save_mgr = re.api.sdk.getManagedSingleton(.fo(g_state.sdk), "app.SaveServiceManager") orelse return;
     var partitions_dict = try g_state.interop_cache.getField(

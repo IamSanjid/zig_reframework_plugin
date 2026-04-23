@@ -89,7 +89,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }) orelse return;
     // simulating `std.Build.addModule`
-    b.modules.put(b.graph.arena, b.dupe("reframework"), mod) catch @panic("OOM");
+    b.modules.put(b.graph.arena, "reframework", mod) catch @panic("OOM");
 
     REFrameworkExamples.build(example, b, target, optimize);
 
@@ -280,7 +280,6 @@ fn addReframeworkImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void
 }
 
 fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
-    const cimguiGetConfig = @import("cimgui").getConfig;
     const target = to.root_module.resolved_target orelse b.standardTargetOptions(.{
         .default_target = .{ .os_tag = .windows },
     });
@@ -294,17 +293,15 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
         .target = target,
         .optimize = optimize,
     }) orelse return;
-    const cimgui_conf = cimguiGetConfig(false);
-
+    const cimgui_conf = @import("cimgui").getConfig(false);
     const cimgui_clib = cimgui_dep.artifact(cimgui_conf.clib_name);
-    // imgui_clib.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
-
+    // cimgui_clib.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
     const cimgui = b.addTranslateC(.{
         .target = target,
         .optimize = optimize,
         .root_source_file = cimgui_dep.path(b.fmt("{s}/cimgui.h", .{cimgui_conf.include_dir})),
     });
-    // imgui.defineCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
+    // cimgui.defineCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
 
     const imgui_c = b.addTranslateC(.{
         .optimize = optimize,

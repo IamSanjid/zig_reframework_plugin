@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const Field = @import("sdk/Field.zig");
 pub const ManagedObject = @import("sdk/ManagedObject.zig");
 pub const Method = @import("sdk/Method.zig");
@@ -15,7 +17,55 @@ pub const VmContext = @import("sdk/VmContext.zig");
 const API = @import("API");
 const Verified = @import("verified.zig").Verified;
 
+const re_error = @import("re_error.zig");
+const REFrameworkError = re_error.REFrameworkError;
+
 const VerifiedSdk = Verified(API.REFrameworkSDKData, .{});
+
+pub const ManagedSingleton = struct {
+    raw: API.REFrameworkManagedSingleton,
+
+    const Self = @This();
+
+    pub inline fn instance(self: Self) ManagedObject {
+        return .{ .raw = self.raw.instance };
+    }
+
+    pub inline fn typeDefinition(self: Self) TypeDefinition {
+        return .{ .raw = self.raw.t };
+    }
+
+    pub inline fn typeInfo(self: Self) TypeInfo {
+        return .{ .raw = self.raw.type_info };
+    }
+};
+
+comptime {
+    @import("std").debug.assert(@sizeOf(ManagedSingleton) == @sizeOf(API.REFrameworkManagedSingleton));
+    @import("std").debug.assert(@alignOf(ManagedSingleton) == @alignOf(API.REFrameworkManagedSingleton));
+}
+
+pub const NativeSingleton = struct {
+    raw: API.REFrameworkNativeSingleton,
+
+    const Self = @This();
+
+    pub inline fn instance(self: Self) ?*anyopaque {
+        return self.raw.instance;
+    }
+
+    pub inline fn typeDefinition(self: Self) TypeDefinition {
+        return .{ .raw = self.raw.t };
+    }
+
+    pub inline fn typeInfo(self: Self) TypeInfo {
+        return .{ .raw = self.raw.type_info };
+    }
+
+    pub inline fn name(self: Self) [:0]const u8 {
+        return std.mem.span(self.raw.name);
+    }
+};
 
 pub inline fn getTdb(vsdk: VerifiedSdk.Extend(.{ .functions = .get_tdb })) ?Tdb {
     const handle = vsdk.safe().functions.safe().get_tdb() orelse null;
@@ -45,6 +95,30 @@ pub inline fn getManagedSingleton(vsdk: VerifiedSdk.Extend(.{ .functions = .get_
 pub inline fn getNativeSingleton(vsdk: VerifiedSdk.Extend(.{ .functions = .get_native_singleton }), type_name: [:0]const u8) ?*anyopaque {
     const handle = vsdk.safe().functions.safe().get_native_singleton(@ptrCast(type_name.ptr)) orelse null;
     return @ptrCast(handle);
+}
+
+pub fn getManagedSingletons(vsdk: VerifiedSdk.Extend(.{ .functions = .get_managed_singletons }), out: []ManagedSingleton) ![]ManagedSingleton {
+    var out_count: c_uint = 0;
+    const result = vsdk.safe().functions.safe().get_managed_singletons(
+        @ptrCast(out.ptr),
+        @intCast(out.len * @sizeOf(ManagedSingleton)),
+        &out_count,
+    );
+    try re_error.mapResult(result);
+    if (out_count > out.len) return error.OutTooSmall;
+    return out[0..out_count];
+}
+
+pub fn getNativeSingletons(vsdk: VerifiedSdk.Extend(.{ .functions = .get_native_singletons }), out: []NativeSingleton) ![]NativeSingleton {
+    var out_count: c_uint = 0;
+    const result = vsdk.safe().functions.safe().get_native_singletons(
+        @ptrCast(out.ptr),
+        @intCast(out.len * @sizeOf(NativeSingleton)),
+        &out_count,
+    );
+    try re_error.mapResult(result);
+    if (out_count > out.len) return error.OutTooSmall;
+    return out[0..out_count];
 }
 
 pub inline fn createManagedString(vsdk: VerifiedSdk.Extend(.{ .functions = .create_managed_string }), str: [:0]const u16) ?ManagedObject {

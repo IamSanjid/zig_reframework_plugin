@@ -34,6 +34,24 @@ pub inline fn getNumProperties(self: Tdb, sdk: Verified(API.REFrameworkSDKData, 
     return sdk.safe().tdb.safe().get_num_properties(self.handle());
 }
 
+pub inline fn getStringsSize(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_strings_size })) u32 {
+    return sdk.safe().tdb.safe().get_strings_size(self.handle());
+}
+
+pub inline fn getRawDataSize(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_raw_data_size })) u32 {
+    return sdk.safe().tdb.safe().get_raw_data_size(self.handle());
+}
+
+pub inline fn getStringDatabase(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_string_database })) ?[*]const u8 {
+    const value = sdk.safe().tdb.safe().get_string_database(self.handle()) orelse return null;
+    return @ptrCast(value);
+}
+
+pub inline fn getRawDatabase(self: Tdb, sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_raw_database })) ?[*]u8 {
+    const ptr = sdk.safe().tdb.safe().get_raw_database(self.handle()) orelse return null;
+    return @ptrCast(ptr);
+}
+
 pub inline fn getType(
     self: Tdb,
     sdk: Verified(API.REFrameworkSDKData, .{ .tdb = .get_type }),

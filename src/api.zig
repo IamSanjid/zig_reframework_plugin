@@ -34,7 +34,6 @@ pub inline fn VerifiedParam(comptime spec: anytype) type {
 
 pub const Api = struct {
     param: VerifiedParamInit,
-    lua_mutex: std.Io.Mutex = .init,
 
     const Self = @This();
     const VerifiedParamInit = VerifiedParam(if (build_options.d3d != build_options.D3D_NO_RENDERER)
@@ -66,14 +65,12 @@ pub const Api = struct {
         return Verified(API.REFrameworkSDKData, spec).init(vp.safe().sdk);
     }
 
-    pub fn lockLua(self: *Self, io: std.Io) !void {
-        try self.lua_mutex.lock(io);
+    pub inline fn lockLua(self: *const Self) void {
         self.param.safe().functions.safe().lock_lua();
     }
 
-    pub fn unlockLua(self: *Self, io: std.Io) void {
+    pub inline fn unlockLua(self: *const Self) void {
         self.param.safe().functions.safe().unlock_lua();
-        self.lua_mutex.unlock(io);
     }
 
     /// Follows `printf` formatting, have to convert all the literals, and types

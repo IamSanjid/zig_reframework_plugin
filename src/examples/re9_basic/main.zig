@@ -274,8 +274,8 @@ fn drawUI() void {
 
 fn onNewFrame() !void {
     {
-        try g_state.api.lockLua(g_state.io);
-        defer g_state.api.unlockLua(g_state.io);
+        g_state.api.lockLua();
+        defer g_state.api.unlockLua();
         try applyHPHack();
         try applyInfiniteAmmoHack();
     }
