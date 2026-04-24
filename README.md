@@ -74,3 +74,6 @@ Run available tests:
 ```sh
 zig build test
 ```
+
+# LICENSE
+MIT

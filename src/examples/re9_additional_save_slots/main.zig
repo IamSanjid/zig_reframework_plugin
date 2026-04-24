@@ -63,6 +63,7 @@ const sdk_spec = .{
     .field = .{
         .get_data_raw,
         .get_type,
+        .is_static,
     },
     .tdb = .find_type,
     .type_definition = .all,

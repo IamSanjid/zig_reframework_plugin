@@ -401,10 +401,157 @@ pub const Cache = struct {
         );
     }
 
-    fn appendError(self: *Self, err: []const u8) !void {
+    pub fn getStaticField(
+        self: *Self,
+        sdk: api.VerifiedSdk(.{
+            .field = sdk_managed_specs.field,
+            .managed_object = sdk_managed_specs.managed_object,
+            .type_definition = .all,
+        }),
+        managed_type_name: [:0]const u8,
+        comptime T: type,
+        comptime field_data: anytype,
+    ) !T {
+        @setRuntimeSafety(false);
+
+        const field = comptime if (@TypeOf(field_data) == @EnumLiteral()) .{
+            .name = @tagName(field_data),
+        } else field_data;
+        const FieldT = @TypeOf(field);
+        if (!type_utils.isPureStruct(FieldT)) {
+            @compileError("Please provide 'field_data' with 'name', 'get' fields or just @EnumLiteral with the field name.");
+        }
+
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
 
+        const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
+
+        const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
+        const type_def_entry = try self.type_def_map.getOrPutValue(type_def, .init(self.allocator));
+
+        const field_name = comptime field.name;
+
+        const field_cache_entry = try type_def_entry.value_ptr.fields.getOrPut(field_name);
+        const field_metadata: FieldMetadata = if (field_cache_entry.found_existing) blk: {
+            break :blk field_cache_entry.value_ptr.*;
+        } else blk: {
+            const field_handle = type_def.findField(.fo(sdk), field_name) orelse {
+                return error.FieldNotFound;
+            };
+            const field_type_def = field_handle.getType(.fo(sdk)) orelse {
+                return error.FieldInvalidType;
+            };
+            const new_field_metadata: FieldMetadata = .{
+                .handle = field_handle,
+                .type_def = field_type_def,
+            };
+            field_cache_entry.value_ptr.* = new_field_metadata;
+            break :blk new_field_metadata;
+        };
+
+        const field_handle = field_metadata.handle;
+
+        const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+        const data_read_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+            .fo(sdk),
+            null,
+            is_valtype,
+        )));
+
+        const getInterop = if (@hasField(FieldT, "get"))
+            field.get
+        else
+            defaultToZigInterop(T);
+
+        return try getInterop(
+            @constCast(&sdk),
+            self,
+            field_metadata.type_def,
+            data_read_ptr,
+        );
+    }
+
+    pub fn setStaticField(
+        self: *Self,
+        sdk: api.VerifiedSdk(.{
+            .field = sdk_managed_specs.field,
+            .managed_object = sdk_managed_specs.managed_object,
+            .type_definition = .all,
+            .functions = .{.get_tdb},
+            .tdb = .find_type,
+        }),
+        managed_type_name: [:0]const u8,
+        comptime field_data: anytype,
+        value: anytype,
+    ) !void {
+        @setRuntimeSafety(false);
+
+        const field = comptime if (@TypeOf(field_data) == @EnumLiteral()) .{
+            .name = @tagName(field_data),
+        } else field_data;
+        const FieldT = @TypeOf(field);
+        if (!type_utils.isPureStruct(FieldT)) {
+            @compileError("Please provide 'field_data' with 'name', 'set' fields or just @EnumLiteral with the field name.");
+        }
+
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
+
+        const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
+        const type_def_entry = try self.type_def_map.getOrPutValue(type_def, .init(self.allocator));
+
+        const field_name = comptime field.name;
+
+        const field_cache_entry = try type_def_entry.value_ptr.fields.getOrPut(field_name);
+        const field_metadata: FieldMetadata = if (field_cache_entry.found_existing) blk: {
+            break :blk field_cache_entry.value_ptr.*;
+        } else blk: {
+            const field_handle = type_def.findField(.fo(sdk), field_name) orelse {
+                return error.FieldNotFound;
+            };
+            const field_type_def = field_handle.getType(.fo(sdk)) orelse {
+                return error.FieldInvalidType;
+            };
+            const new_field_metadata: FieldMetadata = .{
+                .handle = field_handle,
+                .type_def = field_type_def,
+            };
+            field_cache_entry.value_ptr.* = new_field_metadata;
+            break :blk new_field_metadata;
+        };
+
+        const field_handle = field_metadata.handle;
+
+        const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+        if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
+            return error.FieldCannotBeSetWithoutInstance;
+        }
+
+        const data_write_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+            .fo(sdk),
+            null,
+            is_valtype,
+        )));
+
+        const setInterop = if (@hasField(FieldT, "set"))
+            field.set
+        else
+            defaultFromZigInterop;
+
+        try setInterop(
+            @constCast(&sdk),
+            field_metadata.type_def,
+            value,
+            data_write_ptr,
+        );
+    }
+
+    fn appendError(self: *Self, err: []const u8) !void {
         try self.diagnostics.appendSlice(self.allocator, err);
         try self.diagnostics.append(self.allocator, '\n');
     }
@@ -438,6 +585,7 @@ const sdk_managed_specs = .{
     .field = .{
         .get_data_raw,
         .get_type,
+        .is_static,
     },
     .type_definition = .all,
 };
@@ -556,7 +704,7 @@ pub fn defaultFromZigInterop(
         },
         .pointer => |p| {
             if (isManagedInterop(p.child)) {
-                out.* = @ptrCast(arg.managed.raw);
+                out.* = @ptrCast(arg.*.managed.raw);
             } else {
                 out.* = @ptrCast(arg);
             }
@@ -711,11 +859,15 @@ inline fn buildMethodSignature(comptime method_name: []const u8, comptime params
     return comptime blk: {
         var sig: [:0]const u8 = method_name ++ "(";
 
+        if (!type_utils.isTuple(@TypeOf(params))) {
+            @compileError("'" ++ method_name ++ "' method's params are not tuple type. Need something like: .params = .{ .{ .type_name = \"\", .type = ... } }");
+        }
+
         const params_len = std.meta.fields(@TypeOf(params)).len;
         if (params_len > 0) {
             sig = std.fmt.comptimePrint("{s}{s}", .{ sig, params.@"0".type_name });
             for (1..params_len) |i| {
-                sig = std.fmt.comptimePrint("{s},{s}", .{ sig, @field(params, std.fmt.comptimePrint("{d}", .{i})).type_name });
+                sig = std.fmt.comptimePrint("{s}, {s}", .{ sig, @field(params, std.fmt.comptimePrint("{d}", .{i})).type_name });
             }
         }
         sig = std.fmt.comptimePrint("{s})", .{sig});
@@ -729,6 +881,8 @@ fn buildMethodArgs(
     method_metadata: MethodMetadata,
     args: anytype,
 ) anyerror![Data.getParamsLen()]?*anyopaque {
+    @setRuntimeSafety(false);
+
     const params_len = Data.getParamsLen();
     const args_len = std.meta.fields(@TypeOf(args)).len;
 
@@ -751,13 +905,14 @@ fn buildMethodArgs(
     return out;
 }
 
-fn FieldData(comptime fields: anytype, comptime field: @EnumLiteral()) type {
+fn FieldData(comptime Owner: type, comptime fields: anytype, comptime field: @EnumLiteral()) type {
     const field_names = std.meta.fieldNames(@TypeOf(fields));
     inline for (field_names, 0..) |field_name, i| {
         if (std.mem.eql(u8, field_name, @tagName(field))) {
             return struct {
                 const Data = @TypeOf(@field(fields, @tagName(field)));
-                const DefaultInterop = defaultFieldInterop(get().type);
+                const Type = if (@TypeOf(get().type) == @EnumLiteral() and get().type == .self) Owner else get().type;
+                const DefaultInterop = defaultFieldInterop(Type);
                 fn get() Data {
                     return @field(fields, @tagName(field));
                 }
@@ -919,9 +1074,9 @@ pub fn ManagedObject(
                 self: Self,
                 comptime field: @EnumLiteral(),
                 sdk: ManagedSdk,
-            ) !FieldData(fields, field).get().type {
+            ) !FieldData(Instance, fields, field).Type {
                 @setRuntimeSafety(false);
-                const Data = FieldData(fields, field);
+                const Data = FieldData(Instance, fields, field);
 
                 const field_metadata = self.runtime.metadata.fields[Data.getIndex()];
                 const field_handle = field_metadata.handle;
@@ -944,10 +1099,10 @@ pub fn ManagedObject(
                 self: Self,
                 comptime field: @EnumLiteral(),
                 sdk: ManagedSdk,
-                value: FieldData(fields, field).get().type,
+                value: FieldData(Instance, fields, field).Type,
             ) !void {
                 @setRuntimeSafety(false);
-                const Data = FieldData(fields, field);
+                const Data = FieldData(Instance, fields, field);
 
                 const field_metadata = self.runtime.metadata.fields[Data.getIndex()];
                 const field_handle = field_metadata.handle;
@@ -998,6 +1153,67 @@ pub fn ManagedObject(
 
         pub fn instance(self: ManagedObjectType, managed: api.sdk.ManagedObject) Instance {
             return .{ .managed = managed, .runtime = self };
+        }
+
+        pub fn getStaticField(
+            self: ManagedObjectType,
+            comptime field: @EnumLiteral(),
+            sdk: ManagedSdk,
+        ) !FieldData(Instance, fields, field).Type {
+            @setRuntimeSafety(false);
+            const Data = FieldData(Instance, fields, field);
+
+            const field_metadata = self.metadata.fields[Data.getIndex()];
+            const field_handle = field_metadata.handle;
+
+            const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+            if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
+                return error.InvalidStaticField;
+            }
+
+            const data_read_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+                .fo(sdk),
+                null,
+                is_valtype,
+            )));
+            return try Data.getGetInterop()(
+                @constCast(&sdk),
+                self.cache,
+                field_metadata.type_def,
+                data_read_ptr,
+            );
+        }
+
+        pub fn setStaticField(
+            self: ManagedObjectType,
+            comptime field: @EnumLiteral(),
+            sdk: ManagedSdk,
+            value: FieldData(Instance, fields, field).Type,
+        ) !void {
+            @setRuntimeSafety(false);
+            const Data = FieldData(Instance, fields, field);
+
+            const field_metadata = self.metadata.fields[Data.getIndex()];
+            const field_handle = field_metadata.handle;
+
+            const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+            if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
+                return error.InvalidStaticField;
+            }
+
+            const data_write_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+                .fo(sdk),
+                null,
+                is_valtype,
+            )));
+            try Data.getSetInterop()(
+                @constCast(&sdk),
+                field_metadata.type_def,
+                value,
+                data_write_ptr,
+            );
         }
 
         pub fn getMethod(self: ManagedObjectType, comptime method: @EnumLiteral()) api.sdk.Method {
