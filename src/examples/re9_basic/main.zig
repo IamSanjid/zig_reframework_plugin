@@ -396,7 +396,7 @@ fn onNewFrame() !void {
     }
 }
 
-fn onPresent() void {
+fn onUpdate() void {
     onNewFrame() catch |e| {
         if (g_state.interop_cache.ownDiagnostics()) |val| {
             if (val.len > 0) {
@@ -421,7 +421,9 @@ comptime {
         .requiredVersion = .{
             .gameName = "RE9",
         },
-        .onPresent = onPresent,
+        .onPreApplicationEntry = &.{
+            .{ "UpdateBehavior", onUpdate },
+        },
         .onDeviceReset = onDeviceReset,
         .onImGuiDrawUI = struct {
             fn func(data: *re.API_C.REFImGuiFrameCbData) void {

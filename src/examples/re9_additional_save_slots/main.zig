@@ -378,7 +378,7 @@ fn newFrame() !void {
     initialized = try expandGamePartition(save_mgr);
 }
 
-fn onPresent() void {
+fn onUpdate() void {
     newFrame() catch |e| {
         if (g_state.interop_cache.ownDiagnostics()) |val| {
             if (val.len > 0) {
@@ -394,7 +394,9 @@ comptime {
         .requiredVersion = .{
             .gameName = "RE9",
         },
-        .onPresent = onPresent,
+        .onPreApplicationEntry = &.{
+            .{ "UpdateBehavior", onUpdate },
+        },
     });
 }
 
