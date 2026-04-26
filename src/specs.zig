@@ -16,12 +16,15 @@ pub const minimal = .{
             .create_managed_string_normal,
             .allocate,
             .deallocate,
+            .add_hook,
+            .remove_hook,
         },
         .field = .{
             .get_name,
             .get_type,
             .get_offset_from_base,
             .get_data_raw,
+            .is_static,
         },
         .managed_object = .{
             .add_ref,
@@ -34,9 +37,8 @@ pub const minimal = .{
             .get_name,
             .get_return_type,
             .get_num_params,
+            .get_params,
             .is_static,
-            .add_hook,
-            .remove_hook,
         },
         .module = .{
             .get_module_name,

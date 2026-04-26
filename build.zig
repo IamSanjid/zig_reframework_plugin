@@ -129,6 +129,7 @@ fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
     build_options.addOption(u2, "D3D_DX11", @intFromEnum(D3D.dx11));
     build_options.addOption(u2, "D3D_DX12", @intFromEnum(D3D.dx12));
     build_options.addOption(u2, "D3D_DX11_DX12", @intFromEnum(D3D.dx11_dx12));
+    build_options.addOption(std.builtin.OptimizeMode, "optimize_mode", config.optimize);
 
     if (config.d3d) |renderer| {
         const win32 = (b.lazyDependency("win32", .{}) orelse return null).module("win32");

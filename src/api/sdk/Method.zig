@@ -145,7 +145,7 @@ fn preZigFnToC(comptime func: PreHookZigFn) API.REFPreHookFn {
     }.cFunc;
 }
 
-fn postZigFnToC(comptime func: PostHookZigFn) API.REFPreHookFn {
+fn postZigFnToC(comptime func: PostHookZigFn) API.REFPostHookFn {
     return &struct {
         fn cFunc(ret_val: [*c]?*anyopaque, type_def: API.REFrameworkTypeDefinitionHandle, ret_addr: u64) callconv(.c) void {
             const passing_ret_val: ?*?*anyopaque = blk: {

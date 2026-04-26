@@ -16,7 +16,7 @@ const State = struct {
     sdk: re.api.VerifiedSdk(sdk_spec),
     allocator: std.mem.Allocator,
     io: std.Io,
-    interop_cache: interop.Cache,
+    interop_cache: interop.ManagedTypeCache,
     hwnd: windows.HWND,
     renderer_type: re.api.RendererType,
 };
@@ -65,6 +65,7 @@ const sdk_spec = .{
         .get_return_type,
         .get_num_params,
         .get_params,
+        .is_static,
     },
     .field = .{
         .get_data_raw,
@@ -236,7 +237,7 @@ fn applyCPHack() !void {
 
 fn addCreditStockHack(amount: i32) !void {
     const InventoryUserT = try InventoryUser.Runtime.get(&g_state.interop_cache, .fo(g_state.sdk));
-    const user001 = InventoryUserT.getStaticField(.User01, .fo(g_state.sdk)) catch return;
+    const user01 = InventoryUserT.getStatic(.User01, .fo(g_state.sdk)) catch return;
     const inventory_mgr = try InventoryManager.init(
         &g_state.interop_cache,
         .fo(g_state.sdk),
@@ -248,7 +249,7 @@ fn addCreditStockHack(amount: i32) !void {
     const inventory = (try inventory_mgr.call(
         .getInventory,
         .fo(g_state.sdk),
-        .{ user001, InventoryType.hand },
+        .{ user01, InventoryType.hand },
     )) orelse return;
 
     const current_credit_stock = inventory.get(._Moneys, .fo(g_state.sdk)) catch return;
@@ -351,7 +352,7 @@ fn drawUI() !void {
         const cp_step_fast: u64 = 10000;
         _ = cimgui_dll.igInputScalar("##cp", cimgui.ImGuiDataType_U64, &current_hack_state.cp, &cp_step, &cp_step_fast, "%llu", 0);
         cimgui_dll.igSameLine(0, 10);
-        if (cimgui_dll.igButton("Apply CP Hack", .{})) {
+        if (cimgui_dll.igButton("Apply CP", .{})) {
             g_state.api.lockLua();
             defer g_state.api.unlockLua();
             try applyCPHack();

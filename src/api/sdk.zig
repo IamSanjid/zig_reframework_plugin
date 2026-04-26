@@ -131,6 +131,11 @@ pub inline fn createManagedStringNormal(vsdk: VerifiedSdk.Extend(.{ .functions =
     return .{ .raw = @ptrCast(handle) };
 }
 
+pub inline fn createManagedArray(vsdk: VerifiedSdk.Extend(.{ .functions = .create_managed_array }), element_type: TypeDefinition, len: u32) ?ManagedObject {
+    const handle = vsdk.safe().functions.safe().create_managed_array(element_type.raw, len) orelse null;
+    return .{ .raw = @ptrCast(handle) };
+}
+
 // Zig level std.mem.Allocator is fine, but just in-case
 pub inline fn allocate(vsdk: VerifiedSdk.Extend(.{ .functions = .allocate }), size: u64) ?*anyopaque {
     return vsdk.safe().functions.safe().allocate(size);
