@@ -343,9 +343,6 @@ fn expandGamePartition(save_mgr: re.api.sdk.ManagedObject) !bool {
 var initialized = false;
 
 fn newFrame() !void {
-    g_state.api.lockLua();
-    defer g_state.api.unlockLua();
-
     if (initialized) {
         return;
     }
