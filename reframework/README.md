@@ -1,3 +1,3 @@
 Needs to be up-to date with: https://github.com/praydog/REFramework/
 
-re2-imgui sources are altered for zig's translateC to work.
+src/re2-imgui sources have been modified for zig's translateC to work.

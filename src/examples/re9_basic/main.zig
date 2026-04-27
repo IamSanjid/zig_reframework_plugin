@@ -13,7 +13,7 @@ const interop = re.interop;
 
 const State = struct {
     api: re.api.Api,
-    sdk: re.api.VerifiedSdk(sdk_spec),
+    sdk: re.api.VerifiedSdk(re.api.specs.minimal.sdk),
     allocator: std.mem.Allocator,
     io: std.Io,
     interop_cache: interop.ManagedTypeCache,
@@ -49,33 +49,6 @@ pub const std_options: std.Options = .{
     .logFn = pluginLog,
 };
 
-const sdk_spec = .{
-    .functions = .{
-        .get_managed_singleton,
-        .get_tdb,
-        .add_hook,
-        .remove_hook,
-        .create_managed_string_normal,
-    },
-    .managed_object = .{
-        .get_type_definition,
-    },
-    .method = .{
-        .invoke,
-        .get_return_type,
-        .get_num_params,
-        .get_params,
-        .is_static,
-    },
-    .field = .{
-        .get_data_raw,
-        .get_type,
-        .is_static,
-    },
-    .tdb = .find_type,
-    .type_definition = .all,
-};
-
 const PlayerEquipment = managed_types.PlayerEquipment;
 const HitPoint = managed_types.HitPoint;
 const PlayerContext = managed_types.PlayerContext;
@@ -99,7 +72,7 @@ fn init(api: re.Api) !void {
         },
     );
 
-    g_state.sdk = try g_state.api.verifiedSdk(sdk_spec);
+    g_state.sdk = try g_state.api.verifiedSdk(re.api.specs.minimal.sdk);
 
     const PlayerEquipmentRuntimeT = try PlayerEquipment.Runtime.get(&g_state.interop_cache, .fo(g_state.sdk));
     const consumeLoading = PlayerEquipmentRuntimeT.getMethod(.consumeLoading);

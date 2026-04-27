@@ -22,7 +22,8 @@ pub const Verified = verified.Verified;
 pub const specs = @import("specs.zig");
 
 pub const VerifiedMinimal = Verified(API.REFrameworkPluginInitializeParam, specs.minimal);
-pub const VerifiedFull = Verified(API.REFrameworkPluginInitializeParam, .all_recursive);
+pub const VerifiedCompact = Verified(API.REFrameworkPluginInitializeParam, specs.compact);
+pub const VerifiedAll = Verified(API.REFrameworkPluginInitializeParam, .all_recursive);
 
 pub inline fn VerifiedSdk(comptime spec: anytype) type {
     return Verified(API.REFrameworkSDKData, spec);

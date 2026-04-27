@@ -20,7 +20,7 @@ const max_save_games = 90;
 
 const State = struct {
     api: re.api.Api,
-    sdk: re.api.VerifiedSdk(sdk_spec),
+    sdk: re.api.VerifiedSdk(re.api.specs.minimal.sdk),
     allocator: std.mem.Allocator,
     io: std.Io,
     interop_cache: interop.ManagedTypeCache,
@@ -56,36 +56,6 @@ pub const std_options: std.Options = .{
 
 const log = std.log.scoped(.AdditionalSaves);
 
-const sdk_spec = .{
-    .functions = .{
-        .get_managed_singleton,
-        .get_tdb,
-        .add_hook,
-        .remove_hook,
-        .create_managed_string_normal,
-        .create_managed_array,
-    },
-    .managed_object = .{
-        .get_type_definition,
-        .add_ref,
-        .release,
-    },
-    .method = .{
-        .invoke,
-        .get_return_type,
-        .get_num_params,
-        .get_params,
-        .is_static,
-    },
-    .field = .{
-        .get_data_raw,
-        .get_type,
-        .is_static,
-    },
-    .tdb = .find_type,
-    .type_definition = .all,
-};
-
 fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?re.sdk.Method {
     const type_def = tdb.findType(.fo(g_state.sdk), type_name) orelse return null;
     const metadata = try g_state.interop_cache.getOrCacheMethodMetadata(.fo(g_state.sdk), type_def, method_sig);
@@ -107,7 +77,7 @@ fn init(api: re.Api) !void {
         },
     );
 
-    g_state.sdk = try g_state.api.verifiedSdk(sdk_spec);
+    g_state.sdk = try g_state.api.verifiedSdk(re.api.specs.minimal.sdk);
 
     const tdb = re.sdk.getTdb(.fo(g_state.sdk)) orelse {
         std.log.err("Failed to get TDB", .{});
@@ -240,21 +210,23 @@ fn init(api: re.Api) !void {
 
 fn getDefaultSegmentItemSet(save_mgr: re.api.sdk.ManagedObject) !?re.api.sdk.ManagedObject {
     const partitions_dict = (try g_state.interop_cache.getField(
-        .fo(g_state.sdk),
         save_mgr,
-        ?re.api.sdk.ManagedObject,
         ._SaveSlotPartitions,
+        ?re.api.sdk.ManagedObject,
+        .fo(g_state.sdk),
     )) orelse {
         log.err("Could not access _SaveSlotPartitions", .{});
         return null;
     };
 
     const value_coll = try g_state.interop_cache.callMethod(
-        .fo(g_state.sdk),
         partitions_dict,
         "getValue(app.SaveSlotSegmentType)",
         .{},
-        .{ .type = ?interop.ValueType }, // Special type for VmObjType.valtype more info: https://github.com/praydog/REFramework/blob/ea66d322fbe2ebb7e2efd8fd6aa6b06779da6f76/src/mods/bindings/Sdk.cpp#L365
+        // Special type for VmObjType.valtype more info:
+        // https://github.com/praydog/REFramework/blob/ea66d322fbe2ebb7e2efd8fd6aa6b06779da6f76/src/mods/bindings/Sdk.cpp#L365
+        .{ .type = ?interop.ValueType },
+        .fo(g_state.sdk),
         .{SaveSlotSegmentType.default_0},
     );
     if (value_coll) |v| {
@@ -275,21 +247,21 @@ fn getDefaultSegmentItemSet(save_mgr: re.api.sdk.ManagedObject) !?re.api.sdk.Man
 
     log.info("getValue(Default_0) failed, trying _Dict fallback", .{});
     const dict = (try g_state.interop_cache.getField(
-        .fo(g_state.sdk),
         partitions_dict,
-        ?re.api.sdk.ManagedObject,
         ._Dict,
+        ?re.api.sdk.ManagedObject,
+        .fo(g_state.sdk),
     )) orelse {
         log.err("Could not access _Dict", .{});
         return null;
     };
 
     return try g_state.interop_cache.callMethod(
-        .fo(g_state.sdk),
         dict,
         "FindValue(app.SaveSlotSegmentType)",
         .{},
         .{ .type = ?re.api.sdk.ManagedObject },
+        .fo(g_state.sdk),
         .{SaveSlotSegmentType.default_0},
     );
 }
@@ -297,12 +269,12 @@ fn getDefaultSegmentItemSet(save_mgr: re.api.sdk.ManagedObject) !?re.api.sdk.Man
 fn expandGamePartition(save_mgr: re.api.sdk.ManagedObject) !bool {
     const item_set = (try getDefaultSegmentItemSet(save_mgr)) orelse return false;
     const partitions_arr = (try g_state.interop_cache.callMethod(
-        .fo(g_state.sdk),
         item_set,
         "toValueArray()",
-        .{},
+        .{}, // param custom interops otherwise default interop is used
         .{ .type = ?SystemArray },
-        .{},
+        .fo(g_state.sdk),
+        .{}, // args
     ) orelse {
         log.err("Could not get partitions array", .{});
         return false;
@@ -349,12 +321,19 @@ fn expandGamePartition(save_mgr: re.api.sdk.ManagedObject) !bool {
     try game_partition.?.set(._SlotCount, .fo(g_state.sdk), max_save_games);
     log.info("Patched Game partition _SlotCount: {} -> {}", .{ game_partition_slots, max_save_games });
 
-    const old_max = try g_state.interop_cache.getField(.fo(g_state.sdk), save_mgr, i32, ._MaxUseSaveSlotCount);
+    const old_max = try g_state.interop_cache.getField(save_mgr, ._MaxUseSaveSlotCount, i32, .fo(g_state.sdk));
     const new_max = old_max + extra_slots;
-    try g_state.interop_cache.setField(.fo(g_state.sdk), save_mgr, ._MaxUseSaveSlotCount, new_max);
+    try g_state.interop_cache.setField(save_mgr, ._MaxUseSaveSlotCount, .fo(g_state.sdk), new_max);
     log.info("Patched _MaxUseSaveSlotCount: {} -> {}", .{ old_max, new_max });
 
-    g_state.interop_cache.callMethod(.fo(g_state.sdk), save_mgr, "reloadSaveSlotInfo()", .{}, .{ .type = void }, .{}) catch |e| {
+    g_state.interop_cache.callMethod(
+        save_mgr,
+        "reloadSaveSlotInfo()",
+        .{},
+        .{ .type = void },
+        .fo(g_state.sdk),
+        .{},
+    ) catch |e| {
         log.warn("reloadSaveSlotInfo failed: {}", .{e});
     };
 

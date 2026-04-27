@@ -201,15 +201,15 @@ pub const ManagedTypeCache = struct {
 
     pub fn callMethod(
         self: *Self,
+        managed: api.sdk.ManagedObject,
+        comptime sig: [:0]const u8,
+        comptime param_interops: anytype,
+        comptime ret: anytype,
         sdk: api.VerifiedSdk(.{
             .method = sdk_managed_specs.method,
             .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
-        managed: api.sdk.ManagedObject,
-        comptime sig: [:0]const u8,
-        comptime param_interops: anytype,
-        comptime ret: anytype,
         args: anytype,
     ) !ret.type {
         @setRuntimeSafety(false);
@@ -265,9 +265,6 @@ pub const ManagedTypeCache = struct {
         if (invoke_res.exception_thrown) {
             return error.ExceptionThrown;
         }
-
-        // std.log.debug("Invoke_res: 0x{x}", .{@intFromPtr(invoke_res.asPtr())});
-        // std.log.debug("Invoke_res ptr: 0x{x} = {any}", .{ @intFromPtr(&invoke_res.bytes[0]), invoke_res.bytes });
 
         const p: *?*anyopaque = @ptrCast(@alignCast(&invoke_res.bytes[0]));
         // https://github.com/praydog/REFramework/blob/63dd83ead22bbab924b93bbd32e5be36d3a09a4d/src/mods/bindings/Sdk.cpp#L960
@@ -443,14 +440,14 @@ pub const ManagedTypeCache = struct {
 
     pub inline fn getField(
         self: *Self,
+        managed: api.sdk.ManagedObject,
+        comptime field_data: anytype,
+        comptime T: type,
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
             .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
-        managed: api.sdk.ManagedObject,
-        comptime T: type,
-        comptime field_data: anytype,
     ) !T {
         const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
         return self.getFieldFromTypeDef(.fo(sdk), type_def, managed.raw, T, field_data, true);
@@ -458,13 +455,13 @@ pub const ManagedTypeCache = struct {
 
     pub inline fn setField(
         self: *Self,
+        managed: api.sdk.ManagedObject,
+        comptime field_data: anytype,
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
             .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
-        managed: api.sdk.ManagedObject,
-        comptime field_data: anytype,
         value: anytype,
     ) !void {
         const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
@@ -473,16 +470,16 @@ pub const ManagedTypeCache = struct {
 
     pub fn callStaticMethod(
         self: *Self,
+        managed_type_name: [:0]const u8,
+        comptime sig: [:0]const u8,
+        comptime param_interops: anytype,
+        comptime ret: anytype,
         sdk: api.VerifiedSdk(.{
             .method = sdk_managed_specs.method,
             .type_definition = .all,
             .functions = .{.get_tdb},
             .tdb = .find_type,
         }),
-        managed_type_name: [:0]const u8,
-        comptime sig: [:0]const u8,
-        comptime param_interops: anytype,
-        comptime ret: anytype,
         args: anytype,
     ) !ret.type {
         @setRuntimeSafety(false);
@@ -573,15 +570,15 @@ pub const ManagedTypeCache = struct {
 
     pub inline fn getStaticField(
         self: *Self,
+        managed_type_name: [:0]const u8,
+        comptime T: type,
+        comptime field_data: anytype,
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
             .type_definition = .all,
             .functions = .{.get_tdb},
             .tdb = .find_type,
         }),
-        managed_type_name: [:0]const u8,
-        comptime T: type,
-        comptime field_data: anytype,
     ) !T {
         const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
         const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
@@ -590,14 +587,14 @@ pub const ManagedTypeCache = struct {
 
     pub inline fn setStaticField(
         self: *Self,
+        managed_type_name: [:0]const u8,
+        comptime field_data: anytype,
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
             .type_definition = .all,
             .functions = .{.get_tdb},
             .tdb = .find_type,
         }),
-        managed_type_name: [:0]const u8,
-        comptime field_data: anytype,
         value: anytype,
     ) !void {
         const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
@@ -674,10 +671,10 @@ pub const ValueType = struct {
     }
 
     pub inline fn call(
+        self: Self,
         comptime sig: [:0]const u8,
         comptime param_interops: anytype,
         comptime ret: anytype,
-        self: Self,
         cache: *ManagedTypeCache,
         sdk: api.VerifiedSdk(.{
             .method = sdk_managed_specs.method,
@@ -772,8 +769,8 @@ pub fn defaultFromZigInterop(
             // when we're inside of other process its hard to catch std.debug.assert.
             if (comptime isSafeMode()) {
                 // For ValueTypes we need to match the type defs
-                if (to_type_def.getVmObjType(.fo(sdk)) == .valtype) {
-                    return error.ExpectedNonValueType;
+                if (to_type_def.getVmObjType(.fo(sdk)) != .valtype) {
+                    return error.ExpectedValueType;
                 }
                 if (to_type_def.raw != arg.type_def.raw) {
                     return error.ValueTypeDefMismatch;
@@ -842,7 +839,11 @@ pub fn defaultFromZigInterop(
         .@"struct" => {
             @compileError("Cannot interop zig struct");
         },
-        .optional => {
+        .optional => |o| {
+            if (@typeInfo(o.child) != .@"struct" and @typeInfo(o.child) != .pointer) {
+                @compileError("Option struct and pointer types are the only supported optional types. Found: '" ++ @typeName(ArgT) ++ "'");
+            }
+
             if (arg) |v| {
                 defaultFromZigInterop(sdk_ptr, to_type_def, v, out);
             } else {
@@ -1154,22 +1155,23 @@ fn defaultFieldInterop(FieldType: type) type {
 ///     .ret = .{
 ///         .type: type,
 ///         // the cache where the current ManagedObject is "cached" in.
-///         .interop: fn (userdata: ?*anyopaque, cache: *Cache, ret_result: api.sdk.InvokeRet, out: *?*anyopaque) method.ret.type = defaultToZigInterop,
+///         .interop: fn (userdata: ?*anyopaque, cache: *ManagedTypeCache, from_type_def: api.sdk.TypeDefinition, data: *?*anyopaque) !ret.type = defaultToZigInterop(ret.type),
 ///     },
 ///     params: []const MethodParam,
 /// };
 /// const MethodParam = struct {
-///     type_name: [:0]const u8,
+///     // if any one of the params has type_name set to null or undefined, the signature will be built without type names.
+///     type_name: ?[:0]const u8,
 ///     type: type,
-///     comptime interop: fn (userdata: ?*anyopaque, arg: anytype, out: *?*anyopaque) anyerror!void = defaultFromZigInterop,
+///     comptime interop: fn (userdata: ?*anyopaque, to_type_def: api.sdk.TypeDefinition, arg: anytype, out: *?*anyopaque) anyerror!void = defaultFromZigInterop,
 /// };
 /// fields = .{
 ///     .@"field name": Field,
 /// }
 /// const Field = struct {
 ///     type: type,
-///     comptime get: fn (userdata: ?*anyopaque, cache: *Cache, ret_result: api.sdk.InvokeRet, out: *?*anyopaque) field.type = defaultToZigInterop,
-///     comptime set: fn (userdata: ?*anyopaque, arg: anytype, out: *?*anyopaque) anyerror!void = defaultFromZigInterop,
+///     comptime get: fn (userdata: ?*anyopaque, cache: *ManagedTypeCache, from_type_def: api.sdk.TypeDefinition, data: *?*anyopaque) !type = defaultToZigInterop(type),
+///     comptime set: fn (userdata: ?*anyopaque, to_type_def: api.sdk.TypeDefinition, arg: anytype, out: *?*anyopaque) anyerror!void = defaultFromZigInterop,
 /// };
 pub fn ManagedObject(
     comptime full_type_name: [:0]const u8,
@@ -1400,7 +1402,7 @@ pub fn ManagedObject(
                 }
             }
 
-            // don't care if the "sdk" value was modified, it gets discarded anyways.
+            // doesn't matter if the "sdk" value gets modified, it will get discarded.
             var built_args = try buildMethodArgs(Data, @constCast(&sdk), method_metadata, args);
 
             var invoke_res = try method_metadata.handle.invoke(.fo(sdk), null, &built_args);

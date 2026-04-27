@@ -6,6 +6,39 @@ pub const minimal = .{
     .functions = .all,
     .sdk = .{
         .functions = .{
+            .get_managed_singleton,
+            .get_tdb,
+            .add_hook,
+            .remove_hook,
+            .create_managed_string_normal,
+            .create_managed_array,
+        },
+        .managed_object = .{
+            .get_type_definition,
+            .add_ref,
+            .release,
+        },
+        .method = .{
+            .invoke,
+            .get_return_type,
+            .get_num_params,
+            .get_params,
+            .is_static,
+        },
+        .field = .{
+            .get_data_raw,
+            .get_type,
+            .is_static,
+        },
+        .tdb = .find_type,
+        .type_definition = .all,
+    },
+};
+
+pub const compact = .{
+    .functions = .all,
+    .sdk = .{
+        .functions = .{
             .get_tdb,
             .get_resource_manager,
             .get_vm_context,
