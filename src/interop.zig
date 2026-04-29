@@ -15,7 +15,7 @@ inline fn isManagedInterop(T: type) bool {
         @hasDecl(T.Runtime, "checkedInit");
 }
 
-const MethodMetadata = struct {
+pub const MethodMetadata = struct {
     handle: api.sdk.Method,
     ret_type_def: api.sdk.TypeDefinition,
     param_type_defs: []api.sdk.TypeDefinition,
@@ -199,19 +199,18 @@ pub const ManagedTypeCache = struct {
         return method_metadata;
     }
 
-    pub fn callMethodFromTypedef(
+    pub fn invokeMethod(
         self: *Self,
+        obj: ?*anyopaque,
+        method_metadata: MethodMetadata,
+        comptime param_interops: anytype,
+        comptime ret: anytype,
+        comptime static: bool,
         sdk: api.VerifiedSdk(.{
             .method = sdk_managed_specs.method,
             .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
-        type_def: api.sdk.TypeDefinition,
-        obj: ?*anyopaque,
-        sig: [:0]const u8,
-        comptime static: bool,
-        comptime param_interops: anytype,
-        comptime ret: anytype,
         args: anytype,
     ) !ret.type {
         @setRuntimeSafety(false);
@@ -225,8 +224,6 @@ pub const ManagedTypeCache = struct {
         if (!type_utils.isTuple(@TypeOf(args))) {
             @compileError("'args' has to be a tuple");
         }
-
-        const method_metadata = try self.getOrCacheMethodMetadata(.fo(sdk), type_def, sig);
 
         if (comptime static and isSafeMode()) {
             if (!method_metadata.handle.isStatic(.fo(sdk))) {
@@ -282,7 +279,8 @@ pub const ManagedTypeCache = struct {
         args: anytype,
     ) !ret.type {
         const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
-        return self.callMethodFromTypedef(.fo(sdk), type_def, managed.raw, sig, false, param_interops, ret, args);
+        const method_metadata = try self.getOrCacheMethodMetadata(.fo(sdk), type_def, sig);
+        return try self.invokeMethod(managed.raw, method_metadata, param_interops, ret, false, .fo(sdk), args);
     }
 
     pub fn getOrCacheFieldMetadata(
@@ -479,7 +477,8 @@ pub const ManagedTypeCache = struct {
     ) !ret.type {
         const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
         const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
-        return self.callMethodFromTypedef(.fo(sdk), type_def, null, sig, true, param_interops, ret, args);
+        const method_metadata = try self.getOrCacheMethodMetadata(.fo(sdk), type_def, sig);
+        return try self.invokeMethod(null, method_metadata, param_interops, ret, true, .fo(sdk), args);
     }
 
     pub inline fn getStaticField(
@@ -618,14 +617,14 @@ pub const ValueType = struct {
         }),
         args: anytype,
     ) !ret.type {
-        return cache.callMethodFromTypedef(
-            .fo(sdk),
-            self.type_def,
+        const method_metadata = try cache.getOrCacheMethodMetadata(.fo(sdk), self.type_def, sig);
+        return try cache.invokeMethod(
             self.unsafeManaged().raw,
-            sig,
-            false,
+            method_metadata,
             param_interops,
             ret,
+            false,
+            .fo(sdk),
             args,
         );
     }
