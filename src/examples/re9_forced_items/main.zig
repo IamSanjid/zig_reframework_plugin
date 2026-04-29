@@ -123,10 +123,10 @@ pub const std_options: std.Options = .{
 
 const log = std.log.scoped(.re9_forced_items);
 
-fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?interop.MethodMetadata {
+fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?struct { handle: re.sdk.Method } {
     const type_def = tdb.findType(.fo(g.sdk), type_name) orelse return null;
     const metadata = try g.interop_cache.getOrCacheMethodMetadata(.fo(g.sdk), type_def, method_sig);
-    return metadata;
+    return .{ .handle = metadata.handle };
 }
 
 fn populateItemInfo() !void {

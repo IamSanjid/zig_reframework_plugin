@@ -15,7 +15,7 @@ inline fn isManagedInterop(T: type) bool {
         @hasDecl(T.Runtime, "checkedInit");
 }
 
-pub const MethodMetadata = struct {
+const MethodMetadata = struct {
     handle: api.sdk.Method,
     ret_type_def: api.sdk.TypeDefinition,
     param_type_defs: []api.sdk.TypeDefinition,
@@ -199,18 +199,19 @@ pub const ManagedTypeCache = struct {
         return method_metadata;
     }
 
-    pub fn invokeMethod(
+    pub fn callMethodFromTypedef(
         self: *Self,
-        obj: ?*anyopaque,
-        method_metadata: MethodMetadata,
-        comptime param_interops: anytype,
-        comptime ret: anytype,
-        comptime static: bool,
         sdk: api.VerifiedSdk(.{
             .method = sdk_managed_specs.method,
             .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
+        type_def: api.sdk.TypeDefinition,
+        obj: ?*anyopaque,
+        sig: [:0]const u8,
+        comptime static: bool,
+        comptime param_interops: anytype,
+        comptime ret: anytype,
         args: anytype,
     ) !ret.type {
         @setRuntimeSafety(false);
@@ -225,13 +226,15 @@ pub const ManagedTypeCache = struct {
             @compileError("'args' has to be a tuple");
         }
 
+        const method_metadata = try self.getOrCacheMethodMetadata(.fo(sdk), type_def, sig);
+
         if (comptime static and isSafeMode()) {
             if (!method_metadata.handle.isStatic(.fo(sdk))) {
                 return error.RequiresInstance;
             }
         }
 
-        var built_args = try buildMethodArgs(@constCast(&sdk), self, method_metadata, args, param_interops);
+        var built_args = try buildMethodArgs(@constCast(&sdk), method_metadata, args, param_interops);
 
         const managed: api.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(obj)) };
         var invoke_res = try managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args);
@@ -239,8 +242,6 @@ pub const ManagedTypeCache = struct {
         if (invoke_res.exception_thrown) {
             return error.ExceptionThrown;
         }
-
-        std.log.debug("InvokeRes: 0x{x}", .{invoke_res.asUsize()});
 
         const p: *?*anyopaque = @ptrCast(@alignCast(&invoke_res.bytes[0]));
         // https://github.com/praydog/REFramework/blob/63dd83ead22bbab924b93bbd32e5be36d3a09a4d/src/mods/bindings/Sdk.cpp#L960
@@ -281,8 +282,7 @@ pub const ManagedTypeCache = struct {
         args: anytype,
     ) !ret.type {
         const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
-        const method_metadata = try self.getOrCacheMethodMetadata(.fo(sdk), type_def, sig);
-        return try self.invokeMethod(managed.raw, method_metadata, param_interops, ret, false, .fo(sdk), args);
+        return self.callMethodFromTypedef(.fo(sdk), type_def, managed.raw, sig, false, param_interops, ret, args);
     }
 
     pub fn getOrCacheFieldMetadata(
@@ -293,12 +293,22 @@ pub const ManagedTypeCache = struct {
             .type_definition = .all,
         }),
         type_def: api.sdk.TypeDefinition,
-        field_name: [:0]const u8,
+        comptime field_data: anytype,
     ) !FieldMetadata {
+        const field = comptime if (@TypeOf(field_data) == @EnumLiteral()) .{
+            .name = @tagName(field_data),
+        } else field_data;
+        const FieldT = @TypeOf(field);
+        if (!type_utils.isPureStruct(FieldT)) {
+            @compileError("Please provide 'field_data' with 'name', 'get' fields or just @EnumLiteral with the field name.");
+        }
+
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
 
         const type_def_entry = try self.type_def_map.getOrPutValue(type_def, .init(self.allocator));
+
+        const field_name = comptime field.name;
 
         const field_cache_entry = try type_def_entry.value_ptr.fields.getOrPut(field_name);
 
@@ -324,67 +334,6 @@ pub const ManagedTypeCache = struct {
         return field_metadata;
     }
 
-    /// interop: null means using default zig interop based on the field type, otherwise use the provided interop function.
-    pub fn readField(
-        self: *Self,
-        obj: ?*anyopaque,
-        field_metadata: FieldMetadata,
-        comptime T: type,
-        comptime interop: ?ToZigInterop(T),
-        is_valtype_ptr: bool,
-        sdk: api.VerifiedSdk(.{
-            .field = sdk_managed_specs.field,
-            .managed_object = sdk_managed_specs.managed_object,
-            .type_definition = .all,
-        }),
-    ) !T {
-        @setRuntimeSafety(false);
-        const field_handle = field_metadata.handle;
-        const data_read_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
-            .fo(sdk),
-            obj,
-            is_valtype_ptr,
-        )));
-
-        const getInterop = interop orelse defaultToZigInterop(T);
-        return try getInterop(@constCast(&sdk), self, field_metadata.type_def, data_read_ptr);
-    }
-
-    /// interop null means using default zig interop based on the field type, otherwise use the provided interop function.
-    pub fn writeField(
-        self: *Self,
-        obj: ?*anyopaque,
-        field_metadata: FieldMetadata,
-        value: anytype,
-        comptime interop: ?FromZigInterop,
-        comptime static: bool,
-        is_valtype_ptr: bool,
-        sdk: api.VerifiedSdk(.{
-            .field = sdk_managed_specs.field,
-            .managed_object = sdk_managed_specs.managed_object,
-            .type_definition = .all,
-        }),
-    ) !void {
-        @setRuntimeSafety(false);
-        const field_handle = field_metadata.handle;
-        const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
-
-        if (comptime static) {
-            if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
-                return error.RequiresInstance;
-            }
-        }
-
-        const data_write_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
-            .fo(sdk),
-            obj,
-            is_valtype_ptr,
-        )));
-
-        const setInterop = interop orelse defaultFromZigInterop;
-        try setInterop(@constCast(&sdk), self, field_metadata.type_def, value, data_write_ptr);
-    }
-
     pub fn getFieldFromTypeDef(
         self: *Self,
         sdk: api.VerifiedSdk(.{
@@ -398,24 +347,36 @@ pub const ManagedTypeCache = struct {
         comptime field_data: anytype,
         comptime passed_managed_obj: bool,
     ) !T {
+        @setRuntimeSafety(false);
+
         const field = comptime if (@TypeOf(field_data) == @EnumLiteral()) .{
             .name = @tagName(field_data),
         } else field_data;
         const FieldT = @TypeOf(field);
-        if (!type_utils.isPureStruct(FieldT)) {
-            @compileError("Please provide 'field_data' with 'name', 'get' fields or just @EnumLiteral with the field name.");
-        }
 
-        const field_metadata = try self.getOrCacheFieldMetadata(.fo(sdk), type_def, field.name);
+        const field_metadata = try self.getOrCacheFieldMetadata(.fo(sdk), type_def, field_data);
 
         const is_passed_type_valtype = type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+        const field_handle = field_metadata.handle;
+
+        const data_read_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+            .fo(sdk),
+            obj,
+            is_passed_type_valtype and !passed_managed_obj,
+        )));
 
         const getInterop = if (@hasField(FieldT, "get"))
             field.get
         else
             defaultToZigInterop(T);
 
-        return try self.readField(obj, field_metadata, T, getInterop, is_passed_type_valtype and !passed_managed_obj, .fo(sdk));
+        return try getInterop(
+            @constCast(&sdk),
+            self,
+            field_metadata.type_def,
+            data_read_ptr,
+        );
     }
 
     pub fn setFieldFromTypeDef(
@@ -438,27 +399,36 @@ pub const ManagedTypeCache = struct {
             .name = @tagName(field_data),
         } else field_data;
         const FieldT = @TypeOf(field);
-        if (!type_utils.isPureStruct(FieldT)) {
-            @compileError("Please provide 'field_data' with 'name', 'get' fields or just @EnumLiteral with the field name.");
-        }
 
-        const field_metadata = try self.getOrCacheFieldMetadata(.fo(sdk), type_def, field.name);
+        const field_metadata = try self.getOrCacheFieldMetadata(.fo(sdk), type_def, field_data);
 
         const is_passed_type_valtype = type_def.getVmObjType(.fo(sdk)) == .valtype;
+        const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+        const field_handle = field_metadata.handle;
+
+        if (comptime static) {
+            if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
+                return error.RequiresInstance;
+            }
+        }
+
+        const data_write_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+            .fo(sdk),
+            obj,
+            is_passed_type_valtype and !passed_managed_obj,
+        )));
 
         const setInterop = if (@hasField(FieldT, "set"))
             field.set
         else
             defaultFromZigInterop;
 
-        return try self.writeField(
-            obj,
-            field_metadata,
+        try setInterop(
+            @constCast(&sdk),
+            field_metadata.type_def,
             value,
-            setInterop,
-            static,
-            is_passed_type_valtype and !passed_managed_obj,
-            .fo(sdk),
+            data_write_ptr,
         );
     }
 
@@ -509,8 +479,7 @@ pub const ManagedTypeCache = struct {
     ) !ret.type {
         const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
         const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
-        const method_metadata = try self.getOrCacheMethodMetadata(.fo(sdk), type_def, sig);
-        return try self.invokeMethod(null, method_metadata, param_interops, ret, false, .fo(sdk), args);
+        return self.callMethodFromTypedef(.fo(sdk), type_def, null, sig, true, param_interops, ret, args);
     }
 
     pub inline fn getStaticField(
@@ -649,8 +618,16 @@ pub const ValueType = struct {
         }),
         args: anytype,
     ) !ret.type {
-        const method_metadata = try cache.getOrCacheMethodMetadata(.fo(sdk), self.type_def, sig);
-        return try cache.invokeMethod(null, method_metadata, param_interops, ret, false, .fo(sdk), args);
+        return cache.callMethodFromTypedef(
+            .fo(sdk),
+            self.type_def,
+            self.unsafeManaged().raw,
+            sig,
+            false,
+            param_interops,
+            ret,
+            args,
+        );
     }
 
     pub inline fn get(
@@ -705,34 +682,15 @@ pub const SystemStringView = struct {
     data: [:0]const u16,
 };
 
-pub const FromZigInterop = fn (
-    userdata: ?*anyopaque,
-    cache: *ManagedTypeCache,
-    to_type_def: api.sdk.TypeDefinition,
-    arg: anytype,
-    out: *?*anyopaque,
-) anyerror!void;
-
-pub fn ToZigInterop(comptime T: type) type {
-    return fn (
-        userdata: ?*anyopaque,
-        cache: *ManagedTypeCache,
-        from_type_def: api.sdk.TypeDefinition,
-        data: *?*anyopaque,
-    ) anyerror!T;
-}
-
 // TODO: Implement more cases:
 // https://github.com/praydog/REFramework/blob/ea66d322fbe2ebb7e2efd8fd6aa6b06779da6f76/src/mods/bindings/Sdk.cpp#L1086
 pub fn defaultFromZigInterop(
     userdata: ?*anyopaque,
-    cache: *ManagedTypeCache,
     to_type_def: api.sdk.TypeDefinition,
     arg: anytype,
     out: *?*anyopaque,
 ) anyerror!void {
     @setRuntimeSafety(false);
-
     const sdk_ptr: *ManagedSdk = @ptrCast(@alignCast(userdata));
     const sdk = sdk_ptr.*;
 
@@ -769,7 +727,7 @@ pub fn defaultFromZigInterop(
             return;
         },
         SystemStringView => {
-            return defaultFromZigInterop(userdata, cache, to_type_def, arg.data, out);
+            return defaultFromZigInterop(userdata, to_type_def, arg.data, out);
         },
         ?api.sdk.ManagedObject => {
             if (arg) |v| {
@@ -852,7 +810,7 @@ pub fn defaultFromZigInterop(
                 @as(c_int, @intFromEnum(arg))
             else
                 @intFromEnum(arg);
-            return defaultFromZigInterop(userdata, cache, to_type_def, enum_val, out);
+            return defaultFromZigInterop(userdata, to_type_def, enum_val, out);
         },
         .@"struct" => {
             @compileError("Cannot interop zig struct");
@@ -863,7 +821,7 @@ pub fn defaultFromZigInterop(
             }
 
             if (arg) |v| {
-                defaultFromZigInterop(sdk_ptr, cache, to_type_def, v, out);
+                defaultFromZigInterop(sdk_ptr, to_type_def, v, out);
             } else {
                 out.* = null;
             }
@@ -1036,6 +994,13 @@ pub fn defaultToZigInterop(RetType: type) fn (?*anyopaque, *ManagedTypeCache, ap
     }.func;
 }
 
+pub const FromZigInterop = fn (
+    userdata: ?*anyopaque,
+    to_type_def: api.sdk.TypeDefinition,
+    arg: anytype,
+    out: *?*anyopaque,
+) anyerror!void;
+
 const MethodParam = struct {
     type_name: ?[:0]const u8 = null,
     type: type,
@@ -1121,7 +1086,6 @@ inline fn buildMethodSignature(comptime method_name: [:0]const u8, comptime para
 fn buildMethodArgsFromData(
     Data: type,
     userdata: ?*anyopaque,
-    cache: *ManagedTypeCache,
     method_metadata: MethodMetadata,
     args: anytype,
 ) anyerror![std.meta.fields(@TypeOf(args)).len]?*anyopaque {
@@ -1146,12 +1110,11 @@ fn buildMethodArgsFromData(
         param_interops[i] = Data.getParam(i).interop;
     }
 
-    return buildMethodArgsImpl(userdata, cache, method_metadata, args, param_interops);
+    return buildMethodArgsImpl(userdata, method_metadata, args, param_interops);
 }
 
 fn buildMethodArgsImpl(
     userdata: ?*anyopaque,
-    cache: *ManagedTypeCache,
     method_metadata: MethodMetadata,
     args: anytype,
     comptime param_interops: [std.meta.fields(@TypeOf(args)).len]FromZigInterop,
@@ -1168,7 +1131,6 @@ fn buildMethodArgsImpl(
         } else {
             try param_interops[i](
                 userdata,
-                cache,
                 method_metadata.param_type_defs[i],
                 arg,
                 &out[i],
@@ -1181,7 +1143,6 @@ fn buildMethodArgsImpl(
 
 pub inline fn buildMethodArgs(
     userdata: ?*anyopaque,
-    cache: *ManagedTypeCache,
     method_metadata: MethodMetadata,
     args: anytype,
     comptime param_interops: anytype,
@@ -1205,7 +1166,7 @@ pub inline fn buildMethodArgs(
         }
     }
 
-    return buildMethodArgsImpl(userdata, cache, method_metadata, args, param_interop_fns);
+    return buildMethodArgsImpl(userdata, method_metadata, args, param_interop_fns);
 }
 
 fn FieldData(comptime Owner: type, comptime fields: anytype, comptime field: @EnumLiteral()) type {
@@ -1215,7 +1176,7 @@ fn FieldData(comptime Owner: type, comptime fields: anytype, comptime field: @En
             return struct {
                 const Data = @TypeOf(@field(fields, @tagName(field)));
                 const Type = if (@TypeOf(get().type) == @EnumLiteral() and get().type == .self) Owner else get().type;
-                const DefaultInterop = DefaultFieldInterop(Type);
+                const DefaultInterop = defaultFieldInterop(Type);
                 fn get() Data {
                     return @field(fields, @tagName(field));
                 }
@@ -1233,7 +1194,7 @@ fn FieldData(comptime Owner: type, comptime fields: anytype, comptime field: @En
     }
 }
 
-fn DefaultFieldInterop(FieldType: type) type {
+fn defaultFieldInterop(FieldType: type) type {
     return struct {
         inline fn get(
             userdata: ?*anyopaque,
@@ -1247,12 +1208,11 @@ fn DefaultFieldInterop(FieldType: type) type {
 
         inline fn set(
             userdata: ?*anyopaque,
-            cache: *ManagedTypeCache,
             to_type_def: api.sdk.TypeDefinition,
             value: FieldType,
             write_ptr: *?*anyopaque,
         ) anyerror!void {
-            return defaultFromZigInterop(userdata, cache, to_type_def, value, write_ptr);
+            return defaultFromZigInterop(userdata, to_type_def, value, write_ptr);
         }
     };
 }
@@ -1336,7 +1296,7 @@ pub fn ManagedObject(
 
                 const method_metadata = self.runtime.metadata.methods[Data.getIndex()];
                 // don't care if the "sdk" value was modified, it gets discarded anyways.
-                var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), self.runtime.cache, method_metadata, args);
+                var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), method_metadata, args);
 
                 var invoke_res = try self.managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args);
 
@@ -1423,7 +1383,6 @@ pub fn ManagedObject(
                 )));
                 try Data.getSetInterop()(
                     @constCast(&sdk),
-                    self.runtime.cache,
                     field_metadata.type_def,
                     value,
                     data_write_ptr,
@@ -1515,7 +1474,7 @@ pub fn ManagedObject(
             }
 
             // doesn't matter if the "sdk" value gets modified, it will get discarded.
-            var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), self.cache, method_metadata, args);
+            var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), method_metadata, args);
 
             var invoke_res = try method_metadata.handle.invoke(.fo(sdk), null, &built_args);
 
@@ -1615,7 +1574,6 @@ pub fn ManagedObject(
             )));
             try Data.getSetInterop()(
                 @constCast(&sdk),
-                self.cache,
                 field_metadata.type_def,
                 value,
                 data_write_ptr,
