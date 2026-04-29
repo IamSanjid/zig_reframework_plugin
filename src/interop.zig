@@ -231,7 +231,7 @@ pub const ManagedTypeCache = struct {
             }
         }
 
-        var built_args = try buildMethodArgs(@constCast(&sdk), method_metadata, args, param_interops);
+        var built_args = try buildMethodArgs(@constCast(&sdk), self, method_metadata, args, param_interops);
 
         const managed: api.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(obj)) };
         var invoke_res = try managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args);
@@ -424,6 +424,7 @@ pub const ManagedTypeCache = struct {
 
         try setInterop(
             @constCast(&sdk),
+            self,
             field_metadata.type_def,
             value,
             data_write_ptr,
@@ -681,10 +682,28 @@ pub const SystemStringView = struct {
     data: [:0]const u16,
 };
 
+pub const FromZigInterop = fn (
+    userdata: ?*anyopaque,
+    cache: *ManagedTypeCache,
+    to_type_def: api.sdk.TypeDefinition,
+    arg: anytype,
+    out: *?*anyopaque,
+) anyerror!void;
+
+pub fn ToZigInterop(comptime T: type) type {
+    return fn (
+        userdata: ?*anyopaque,
+        cache: *ManagedTypeCache,
+        from_type_def: api.sdk.TypeDefinition,
+        data: *?*anyopaque,
+    ) anyerror!T;
+}
+
 // TODO: Implement more cases:
 // https://github.com/praydog/REFramework/blob/ea66d322fbe2ebb7e2efd8fd6aa6b06779da6f76/src/mods/bindings/Sdk.cpp#L1086
 pub fn defaultFromZigInterop(
     userdata: ?*anyopaque,
+    cache: *ManagedTypeCache,
     to_type_def: api.sdk.TypeDefinition,
     arg: anytype,
     out: *?*anyopaque,
@@ -726,7 +745,7 @@ pub fn defaultFromZigInterop(
             return;
         },
         SystemStringView => {
-            return defaultFromZigInterop(userdata, to_type_def, arg.data, out);
+            return defaultFromZigInterop(userdata, cache, to_type_def, arg.data, out);
         },
         ?api.sdk.ManagedObject => {
             if (arg) |v| {
@@ -809,7 +828,7 @@ pub fn defaultFromZigInterop(
                 @as(c_int, @intFromEnum(arg))
             else
                 @intFromEnum(arg);
-            return defaultFromZigInterop(userdata, to_type_def, enum_val, out);
+            return defaultFromZigInterop(userdata, cache, to_type_def, enum_val, out);
         },
         .@"struct" => {
             @compileError("Cannot interop zig struct");
@@ -820,7 +839,7 @@ pub fn defaultFromZigInterop(
             }
 
             if (arg) |v| {
-                defaultFromZigInterop(sdk_ptr, to_type_def, v, out);
+                try defaultFromZigInterop(userdata, cache, to_type_def, v, out);
             } else {
                 out.* = null;
             }
@@ -993,13 +1012,6 @@ pub fn defaultToZigInterop(RetType: type) fn (?*anyopaque, *ManagedTypeCache, ap
     }.func;
 }
 
-pub const FromZigInterop = fn (
-    userdata: ?*anyopaque,
-    to_type_def: api.sdk.TypeDefinition,
-    arg: anytype,
-    out: *?*anyopaque,
-) anyerror!void;
-
 const MethodParam = struct {
     type_name: ?[:0]const u8 = null,
     type: type,
@@ -1085,6 +1097,7 @@ inline fn buildMethodSignature(comptime method_name: [:0]const u8, comptime para
 fn buildMethodArgsFromData(
     Data: type,
     userdata: ?*anyopaque,
+    cache: *ManagedTypeCache,
     method_metadata: MethodMetadata,
     args: anytype,
 ) anyerror![std.meta.fields(@TypeOf(args)).len]?*anyopaque {
@@ -1109,11 +1122,12 @@ fn buildMethodArgsFromData(
         param_interops[i] = Data.getParam(i).interop;
     }
 
-    return buildMethodArgsImpl(userdata, method_metadata, args, param_interops);
+    return buildMethodArgsImpl(userdata, cache, method_metadata, args, param_interops);
 }
 
 fn buildMethodArgsImpl(
     userdata: ?*anyopaque,
+    cache: *ManagedTypeCache,
     method_metadata: MethodMetadata,
     args: anytype,
     comptime param_interops: [std.meta.fields(@TypeOf(args)).len]FromZigInterop,
@@ -1130,6 +1144,7 @@ fn buildMethodArgsImpl(
         } else {
             try param_interops[i](
                 userdata,
+                cache,
                 method_metadata.param_type_defs[i],
                 arg,
                 &out[i],
@@ -1142,6 +1157,7 @@ fn buildMethodArgsImpl(
 
 pub inline fn buildMethodArgs(
     userdata: ?*anyopaque,
+    cache: *ManagedTypeCache,
     method_metadata: MethodMetadata,
     args: anytype,
     comptime param_interops: anytype,
@@ -1165,7 +1181,7 @@ pub inline fn buildMethodArgs(
         }
     }
 
-    return buildMethodArgsImpl(userdata, method_metadata, args, param_interop_fns);
+    return buildMethodArgsImpl(userdata, cache, method_metadata, args, param_interop_fns);
 }
 
 fn FieldData(comptime Owner: type, comptime fields: anytype, comptime field: @EnumLiteral()) type {
@@ -1175,7 +1191,7 @@ fn FieldData(comptime Owner: type, comptime fields: anytype, comptime field: @En
             return struct {
                 const Data = @TypeOf(@field(fields, @tagName(field)));
                 const Type = if (@TypeOf(get().type) == @EnumLiteral() and get().type == .self) Owner else get().type;
-                const DefaultInterop = defaultFieldInterop(Type);
+                const DefaultInterop = DefaultFieldInterop(Type);
                 fn get() Data {
                     return @field(fields, @tagName(field));
                 }
@@ -1193,7 +1209,7 @@ fn FieldData(comptime Owner: type, comptime fields: anytype, comptime field: @En
     }
 }
 
-fn defaultFieldInterop(FieldType: type) type {
+fn DefaultFieldInterop(FieldType: type) type {
     return struct {
         inline fn get(
             userdata: ?*anyopaque,
@@ -1207,11 +1223,12 @@ fn defaultFieldInterop(FieldType: type) type {
 
         inline fn set(
             userdata: ?*anyopaque,
+            cache: *ManagedTypeCache,
             to_type_def: api.sdk.TypeDefinition,
             value: FieldType,
             write_ptr: *?*anyopaque,
         ) anyerror!void {
-            return defaultFromZigInterop(userdata, to_type_def, value, write_ptr);
+            return defaultFromZigInterop(userdata, cache, to_type_def, value, write_ptr);
         }
     };
 }
@@ -1225,7 +1242,7 @@ fn defaultFieldInterop(FieldType: type) type {
 ///     .ret = .{
 ///         .type: type,
 ///         // the cache where the current ManagedObject is "cached" in.
-///         .interop: fn (userdata: ?*anyopaque, cache: *ManagedTypeCache, from_type_def: api.sdk.TypeDefinition, data: *?*anyopaque) !ret.type = defaultToZigInterop(ret.type),
+///         .interop: ToZigInterop(type) = defaultToZigInterop(ret.type),
 ///     },
 ///     params: []const MethodParam,
 /// };
@@ -1233,15 +1250,15 @@ fn defaultFieldInterop(FieldType: type) type {
 ///     // if any one of the params has type_name set to null or undefined, the signature will be built without type names.
 ///     type_name: ?[:0]const u8,
 ///     type: type,
-///     comptime interop: fn (userdata: ?*anyopaque, to_type_def: api.sdk.TypeDefinition, arg: anytype, out: *?*anyopaque) anyerror!void = defaultFromZigInterop,
+///     comptime interop: FromZigInterop = defaultFromZigInterop,
 /// };
 /// fields = .{
 ///     .@"field name": Field,
 /// }
 /// const Field = struct {
 ///     type: type,
-///     comptime get: fn (userdata: ?*anyopaque, cache: *ManagedTypeCache, from_type_def: api.sdk.TypeDefinition, data: *?*anyopaque) !type = defaultToZigInterop(type),
-///     comptime set: fn (userdata: ?*anyopaque, to_type_def: api.sdk.TypeDefinition, arg: anytype, out: *?*anyopaque) anyerror!void = defaultFromZigInterop,
+///     comptime get: ToZigInterop(type) = defaultToZigInterop(type),
+///     comptime set: FromZigInterop = defaultFromZigInterop,
 /// };
 pub fn ManagedObject(
     comptime full_type_name: [:0]const u8,
@@ -1295,7 +1312,7 @@ pub fn ManagedObject(
 
                 const method_metadata = self.runtime.metadata.methods[Data.getIndex()];
                 // don't care if the "sdk" value was modified, it gets discarded anyways.
-                var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), method_metadata, args);
+                var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), self.runtime.cache, method_metadata, args);
 
                 var invoke_res = try self.managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args);
 
@@ -1382,6 +1399,7 @@ pub fn ManagedObject(
                 )));
                 try Data.getSetInterop()(
                     @constCast(&sdk),
+                    self.runtime.cache,
                     field_metadata.type_def,
                     value,
                     data_write_ptr,
@@ -1473,7 +1491,7 @@ pub fn ManagedObject(
             }
 
             // doesn't matter if the "sdk" value gets modified, it will get discarded.
-            var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), method_metadata, args);
+            var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), self.cache, method_metadata, args);
 
             var invoke_res = try method_metadata.handle.invoke(.fo(sdk), null, &built_args);
 
@@ -1573,6 +1591,7 @@ pub fn ManagedObject(
             )));
             try Data.getSetInterop()(
                 @constCast(&sdk),
+                self.cache,
                 field_metadata.type_def,
                 value,
                 data_write_ptr,
@@ -1749,7 +1768,7 @@ test "basic" {
     {
         @setRuntimeSafety(false);
         var arg: u32 = undefined;
-        try defaultFromZigInterop(&dummy_sdk, dummy_typedef, 420, @ptrCast(@alignCast(&arg)));
+        try defaultFromZigInterop(&dummy_sdk, &dummy_cache, dummy_typedef, 420, @ptrCast(@alignCast(&arg)));
         try std.testing.expectEqual(420, arg);
     }
 }
