@@ -173,6 +173,8 @@ fn ComptimeExtend(comptime a: anytype, comptime b: anytype) type {
         }
     }.f;
 
+    // TODO: Increase this logically instead of arbitary value.
+    @setEvalBranchQuota(2000000);
     inline for (a_fields) |a_field| {
         field_names[field_index] = a_field.intended_name;
         if (fieldIndexWithIntendedName(b_struct, a_field.intended_name)) |b_field_index| {

@@ -15,6 +15,9 @@ raw: API.REFrameworkManagedObjectHandle,
 
 const ManagedObject = @This();
 
+// Keep updated with https://github.com/praydog/REFramework/blob/c4b1314820d20255febf7834903e8cedb669b49c/shared/sdk/REManagedObject.cpp#L14
+pub const runtime_size = 0x10;
+
 pub inline fn handle(self: ManagedObject) API.REFrameworkManagedObjectHandle {
     return self.raw;
 }

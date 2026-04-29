@@ -10,6 +10,7 @@ pub const minimal = .{
             .get_tdb,
             .add_hook,
             .remove_hook,
+            .create_managed_string,
             .create_managed_string_normal,
             .create_managed_array,
         },
@@ -26,6 +27,7 @@ pub const minimal = .{
             .is_static,
         },
         .field = .{
+            .get_offset_from_base,
             .get_data_raw,
             .get_type,
             .is_static,

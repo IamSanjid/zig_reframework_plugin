@@ -35,7 +35,7 @@ fn REFrameworkExamplesT(comptime examples: anytype) type {
     const TagT = @Enum(u32, .nonexhaustive, &field_names, &field_values);
     return struct {
         const Tag = TagT;
-        const default: Tag = @enumFromInt(0);
+        const default: Tag = .all;
 
         fn build(tag: Tag, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
             if (tag == .all) {
@@ -60,6 +60,7 @@ fn REFrameworkExamplesT(comptime examples: anytype) type {
 const REFrameworkExamples = REFrameworkExamplesT(.{
     .re9_basic,
     .re9_additional_save_slots,
+    .re9_forced_items,
     .re_imgui,
     .re_imgui_custom,
 });
@@ -207,6 +208,31 @@ fn re9_additional_save_slots_builder(b: *std.Build, target: std.Build.ResolvedTa
     });
 
     b.installArtifact(re9_additional_save_slots_plugin);
+}
+
+fn re9_forced_items_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const re9_forced_items_plugin = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "re9_forced_items",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/re9_forced_items/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "reframework",
+                    .module = reframework(b, .{
+                        .d3d = null,
+                        .target = target,
+                        .optimize = optimize,
+                    }) orelse return,
+                },
+            },
+        }),
+    });
+    addReframeworkImGuiToExample(b, re9_forced_items_plugin);
+
+    b.installArtifact(re9_forced_items_plugin);
 }
 
 fn re_imgui_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {

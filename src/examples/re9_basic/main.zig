@@ -17,8 +17,6 @@ const State = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     interop_cache: interop.ManagedTypeCache,
-    hwnd: windows.HWND,
-    renderer_type: re.api.RendererType,
 };
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
