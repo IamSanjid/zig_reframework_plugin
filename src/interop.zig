@@ -332,6 +332,69 @@ pub const ManagedTypeCache = struct {
         return field_metadata;
     }
 
+    pub fn readField(
+        self: *Self,
+        obj: ?*anyopaque,
+        field_metadata: FieldMetadata,
+        comptime T: type,
+        comptime interop: ?ToZigInterop(T),
+        is_obj_valtype: bool,
+        sdk: api.VerifiedSdk(.{
+            .field = sdk_managed_specs.field,
+            .managed_object = sdk_managed_specs.managed_object,
+            .type_definition = .all,
+        }),
+    ) !T {
+        @setRuntimeSafety(false);
+
+        const field_handle = field_metadata.handle;
+
+        const data_read_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+            .fo(sdk),
+            obj,
+            is_obj_valtype,
+        )));
+
+        const getInterop = interop orelse defaultToZigInterop(T);
+        return getInterop(@constCast(&sdk), self, field_metadata.type_def, data_read_ptr);
+    }
+
+    pub fn writeField(
+        self: *Self,
+        obj: ?*anyopaque,
+        field_metadata: FieldMetadata,
+        comptime interop: ?FromZigInterop,
+        is_obj_valtype: bool,
+        comptime static: bool,
+        sdk: api.VerifiedSdk(.{
+            .field = sdk_managed_specs.field,
+            .managed_object = sdk_managed_specs.managed_object,
+            .type_definition = .all,
+        }),
+        value: anytype,
+    ) !void {
+        @setRuntimeSafety(false);
+
+        const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+        const field_handle = field_metadata.handle;
+
+        if (comptime static) {
+            if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
+                return error.RequiresInstance;
+            }
+        }
+
+        const data_write_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+            .fo(sdk),
+            obj,
+            is_obj_valtype,
+        )));
+
+        const setInterop = interop orelse defaultFromZigInterop;
+        return setInterop(@constCast(&sdk), self, field_metadata.type_def, value, data_write_ptr);
+    }
+
     pub fn getFieldFromTypeDef(
         self: *Self,
         sdk: api.VerifiedSdk(.{
@@ -345,35 +408,30 @@ pub const ManagedTypeCache = struct {
         comptime field_data: anytype,
         comptime passed_managed_obj: bool,
     ) !T {
-        @setRuntimeSafety(false);
-
         const field = comptime if (@TypeOf(field_data) == @EnumLiteral()) .{
             .name = @tagName(field_data),
         } else field_data;
         const FieldT = @TypeOf(field);
+        if (!type_utils.isPureStruct(FieldT)) {
+            @compileError("Please provide 'field_data' with 'name', 'get' fields or just @EnumLiteral with the field name.");
+        }
 
         const field_metadata = try self.getOrCacheFieldMetadata(.fo(sdk), type_def, field_data);
 
         const is_passed_type_valtype = type_def.getVmObjType(.fo(sdk)) == .valtype;
-
-        const field_handle = field_metadata.handle;
-
-        const data_read_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
-            .fo(sdk),
-            obj,
-            is_passed_type_valtype and !passed_managed_obj,
-        )));
 
         const getInterop = if (@hasField(FieldT, "get"))
             field.get
         else
             defaultToZigInterop(T);
 
-        return try getInterop(
-            @constCast(&sdk),
-            self,
-            field_metadata.type_def,
-            data_read_ptr,
+        return self.readField(
+            obj,
+            field_metadata,
+            T,
+            getInterop,
+            is_passed_type_valtype and !passed_managed_obj,
+            .fo(sdk),
         );
     }
 
@@ -391,8 +449,6 @@ pub const ManagedTypeCache = struct {
         comptime static: bool,
         value: anytype,
     ) !void {
-        @setRuntimeSafety(false);
-
         const field = comptime if (@TypeOf(field_data) == @EnumLiteral()) .{
             .name = @tagName(field_data),
         } else field_data;
@@ -401,33 +457,20 @@ pub const ManagedTypeCache = struct {
         const field_metadata = try self.getOrCacheFieldMetadata(.fo(sdk), type_def, field_data);
 
         const is_passed_type_valtype = type_def.getVmObjType(.fo(sdk)) == .valtype;
-        const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
-
-        const field_handle = field_metadata.handle;
-
-        if (comptime static) {
-            if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
-                return error.RequiresInstance;
-            }
-        }
-
-        const data_write_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
-            .fo(sdk),
-            obj,
-            is_passed_type_valtype and !passed_managed_obj,
-        )));
 
         const setInterop = if (@hasField(FieldT, "set"))
             field.set
         else
             defaultFromZigInterop;
 
-        try setInterop(
-            @constCast(&sdk),
-            self,
-            field_metadata.type_def,
+        return self.writeField(
+            obj,
+            field_metadata,
+            setInterop,
+            is_passed_type_valtype and !passed_managed_obj,
+            static,
+            .fo(sdk),
             value,
-            data_write_ptr,
         );
     }
 

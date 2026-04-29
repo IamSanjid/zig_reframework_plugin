@@ -16,6 +16,32 @@ const SystemArray = managed_types.SystemArray;
 const ItemDetails = managed_types.ItemDetails;
 const ItemDetailData = managed_types.ItemDetailData;
 
+pub fn pluginLog(
+    comptime message_level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    const log_msg = std.fmt.allocPrintSentinel(
+        g.allocator,
+        (if (scope != .default) ("(" ++ @tagName(scope) ++ "): ") else "") ++ format,
+        args,
+        0,
+    ) catch return;
+    defer g.allocator.free(log_msg);
+    switch (message_level) {
+        .err => g.api.logError("%s", .{log_msg.ptr}),
+        .warn => g.api.logWarn("%s", .{log_msg.ptr}),
+        else => g.api.logInfo("%s", .{log_msg.ptr}),
+    }
+}
+
+pub const std_options: std.Options = .{
+    .logFn = pluginLog,
+};
+
+const log = std.log.scoped(.re9_forced_items);
+
 const verified_sdk_spec = re.api.specs.extend(
     re.api.specs.minimal.sdk,
     .{ .field = .{ .extend = .{.get_name} } },
@@ -96,32 +122,6 @@ pub const g = struct {
         _ = debug_allocator.deinit();
     }
 };
-
-pub fn pluginLog(
-    comptime message_level: std.log.Level,
-    comptime scope: @EnumLiteral(),
-    comptime format: []const u8,
-    args: anytype,
-) void {
-    const log_msg = std.fmt.allocPrintSentinel(
-        g.allocator,
-        (if (scope != .default) ("(" ++ @tagName(scope) ++ "): ") else "") ++ format,
-        args,
-        0,
-    ) catch return;
-    defer g.allocator.free(log_msg);
-    switch (message_level) {
-        .err => g.api.logError("%s", .{log_msg.ptr}),
-        .warn => g.api.logWarn("%s", .{log_msg.ptr}),
-        else => g.api.logInfo("%s", .{log_msg.ptr}),
-    }
-}
-
-pub const std_options: std.Options = .{
-    .logFn = pluginLog,
-};
-
-const log = std.log.scoped(.re9_forced_items);
 
 fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?interop.MethodMetadata {
     const type_def = tdb.findType(.fo(g.sdk), type_name) orelse return null;
@@ -447,13 +447,13 @@ comptime {
         //     .{ "UpdateBehavior", onUpdate },
         // },
         .onDeviceReset = onDeviceReset,
-        // .onImGuiDrawUI = struct {
-        //     fn func(data: *re.API_C.REFImGuiFrameCbData) void {
-        //         ui.draw(data) catch |e| {
-        //             log.err("Error in UI draw: {}", .{e});
-        //         };
-        //     }
-        // }.func,
+        .onImGuiDrawUI = struct {
+            fn func(data: *re.API_C.REFImGuiFrameCbData) void {
+                ui.draw(data) catch |e| {
+                    log.err("Error in UI draw: {}", .{e});
+                };
+            }
+        }.func,
     });
 }
 
