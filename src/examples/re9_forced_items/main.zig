@@ -15,6 +15,8 @@ const interop = re.interop;
 const SystemArray = managed_types.SystemArray;
 const ItemDetails = managed_types.ItemDetails;
 const ItemDetailData = managed_types.ItemDetailData;
+const ItemCategory = managed_types.ItemCategory;
+const ItemId = managed_types.ItemId;
 
 pub fn pluginLog(
     comptime message_level: std.log.Level,
@@ -47,11 +49,51 @@ const verified_sdk_spec = re.api.specs.extend(
     .{ .field = .{ .extend = .{.get_name} } },
 );
 
-const ItemCategory = re.sdk.ManagedObject;
-
 pub const Items = struct {
     categories: std.AutoHashMap(ItemCategory, [:0]const u8),
     catalog: std.AutoHashMap(ItemCategory, std.ArrayList(ItemDetails)),
+
+    pub const Iterator = struct {
+        items: []ItemDetails,
+        next_idx: usize = 0,
+
+        pub fn next(self: *Iterator) ?ItemDetails {
+            if (self.next_idx >= self.items.len) return null;
+            const item = self.items[self.next_idx];
+            self.next_idx += 1;
+            return item;
+        }
+
+        pub fn isEmpty(self: *Iterator) bool {
+            return self.items.len == 0;
+        }
+    };
+
+    pub const IteratorAll = struct {
+        owner: *const Items,
+        category_iter: std.AutoHashMap(ItemCategory, std.ArrayList(ItemDetails)).KeyIterator,
+        current_category: ?ItemCategory = null,
+
+        pub fn next(self: *IteratorAll) ?Iterator {
+            self.current_category = self.category_iter.next();
+            return self.owner.iterator(self.current_category orelse return null);
+        }
+    };
+
+    pub const CategoriesIterator = struct {
+        iter: std.AutoHashMap(ItemCategory, [:0]const u8).Iterator,
+
+        pub fn next(self: *CategoriesIterator) ?struct {
+            category: ItemCategory,
+            name: [:0]const u8,
+        } {
+            const entry = self.iter.next() orelse return null;
+            return .{
+                .category = entry.key_ptr.*,
+                .name = entry.value_ptr.*,
+            };
+        }
+    };
 
     fn init(allocator: std.mem.Allocator) Items {
         return Items{
@@ -83,6 +125,26 @@ pub const Items = struct {
             items.deinit(allocator);
         }
         self.catalog.deinit();
+    }
+
+    pub fn iterator(self: *const Items, category: ItemCategory) Iterator {
+        const items: std.ArrayList(ItemDetails) = self.catalog.get(category) orelse .empty;
+        return .{
+            .items = items.items,
+        };
+    }
+
+    pub fn iteratorAll(self: *const Items) Iterator {
+        return .{
+            .owner = self,
+            .category_iter = self.categories.keyIterator(),
+        };
+    }
+
+    pub fn categoriesIterator(self: *const Items) CategoriesIterator {
+        return .{
+            .iter = self.categories.iterator(),
+        };
     }
 };
 
@@ -161,6 +223,9 @@ fn populateItemInfo() !void {
 
     log.debug("ItemCategories: {}", .{g.items.categories.count()});
 
+    var items_set = std.AutoHashMap(ItemId, void).init(g.allocator);
+    defer items_set.deinit();
+
     const item_mgr = re.sdk.getManagedSingleton(.fo(g.sdk), "app.ItemManager") orelse return error.ItemManagerNotFound;
     const item_catalog = try g.interop_cache.getField(item_mgr, ._ItemCatalog, re.sdk.ManagedObject, .fo(g.sdk));
 
@@ -198,6 +263,11 @@ fn populateItemInfo() !void {
                 const item_detail = try ItemDetailData.init(&g.interop_cache, .fo(g.sdk), item_detail_mo);
 
                 const id = item_detail.get(._ItemID, .fo(g.sdk)) catch continue;
+                if ((try items_set.getOrPut(id)).found_existing) {
+                    log.info("Duplicate item id found: 0x{x}, skipping", .{@intFromPtr(id.raw)});
+                    continue;
+                }
+
                 const item_catagoery = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
 
                 _ = g.items.categories.get(item_catagoery) orelse {
@@ -258,7 +328,7 @@ fn populateItemInfo() !void {
     log.warn("Couldn't get the items details from catalog array route.", .{});
 
     const item_id_typedef = g.tdb.findType(.fo(g.sdk), "app.ItemID") orelse return error.ItemIdTypeNotFound;
-    var item_ids: std.ArrayList(struct { [:0]const u8, re.sdk.ManagedObject }) = .empty;
+    var item_ids: std.ArrayList(struct { [:0]const u8, ItemId }) = .empty;
     defer item_ids.deinit(g.allocator);
     {
         const fields_len = item_id_typedef.getNumFields(.fo(g.sdk));
@@ -302,6 +372,11 @@ fn populateItemInfo() !void {
         ) catch continue;
 
         const id = item_detail.get(._ItemID, .fo(g.sdk)) catch continue;
+        if ((try items_set.getOrPut(id)).found_existing) {
+            log.info("Duplicate item id found: 0x{x}, skipping", .{@intFromPtr(id.raw)});
+            continue;
+        }
+
         const item_catagoery = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
 
         _ = g.items.categories.get(item_catagoery) orelse {

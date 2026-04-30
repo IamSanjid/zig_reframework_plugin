@@ -33,6 +33,9 @@ pub const SystemArray = interop.ManagedObject("System.Array", .{
     },
 }, .{});
 
+pub const ItemCategory = re.sdk.ManagedObject;
+pub const ItemId = re.sdk.ManagedObject;
+
 pub const InventoryPanelShapeSetting = interop.ManagedObject("app.InventoryPanelShapeSetting", .{}, .{
     ._BaseShapeTypeCache = .{ .type = re.sdk.ManagedObject },
     ._BaseShapeTypeStr = .{ .type = interop.SystemString },
