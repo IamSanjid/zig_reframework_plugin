@@ -20,6 +20,9 @@ const ItemId = managed_types.ItemId;
 
 const ItemManager = re.sdk.ManagedObject;
 
+const GenericDictionary = managed_types.GenericDictionary;
+const ConcurrentCatalogDictionary = managed_types.ConcurrentCatalogDictionary;
+
 pub fn pluginLog(
     comptime message_level: std.log.Level,
     comptime scope: @EnumLiteral(),
@@ -98,29 +101,47 @@ pub const Items = struct {
     categories: std.AutoHashMap(ItemCategory, [:0]const u8),
     items_cache: std.AutoHashMap(ItemId, ItemDetails),
     manager: ItemManager,
+    last_version: i32 = 0,
 
     pub const IteratorAll = struct {
         owner: *Items,
-        values: SystemArray,
-        len: i32,
-        next_idx: i32 = 0,
+        entries: interop.SystemArrayEntries,
+        count: u32,
+        next_idx: u32 = 0,
+
+        const Entry = extern struct {
+            hash_code: i32,
+            next: i32,
+            key: ?*anyopaque,
+            kvp: ?*anyopaque,
+        };
+        comptime {
+            std.debug.assert(@offsetOf(Entry, "key") == 0x08);
+        }
 
         pub fn next(self: *IteratorAll) !?ItemDetails {
-            if (self.next_idx >= self.len) return null;
+            @setRuntimeSafety(false);
+            if (self.next_idx >= self.count) return null;
 
-            while (self.next_idx < self.len) {
+            const element_size = self.entries.contained_type_def.getValueTypeSize(.fo(g.sdk));
+            if (element_size != @sizeOf(Entry)) {
+                return error.UnexpectedEntrySize;
+            }
+
+            while (self.next_idx < self.count) {
                 defer self.next_idx += 1;
 
-                const item_detail_mo = (try self.values.call(.GetValue, .fo(g.sdk), .{self.next_idx})) orelse
-                    return error.ItemDetailDataNotFound;
+                const entry_ptr_usize = @intFromPtr(self.entries.ptr) + (self.next_idx * element_size);
+                const entry: *Entry = @ptrFromInt(entry_ptr_usize);
 
-                const item_detail = ItemDetailData.init(&g.interop_cache, .fo(g.sdk), item_detail_mo) catch continue;
-                const id = item_detail.get(._ItemID, .fo(g.sdk)) catch continue;
+                const id: ItemId = .{ .raw = @ptrCast(@alignCast(entry.key)) };
 
                 const item_entry = self.owner.items_cache.getOrPut(id) catch continue;
                 if (item_entry.found_existing) {
                     return item_entry.value_ptr.*;
                 } else {
+                    const kvp: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(entry.kvp)) };
+                    const item_detail = g.interop_cache.getField(kvp, ._Value, ItemDetailData, .fo(g.sdk)) catch continue;
                     const item_category = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
 
                     // arena allocated ValueType, reset on deinit
@@ -172,7 +193,7 @@ pub const Items = struct {
         }
 
         pub fn deinit(self: IteratorAll) void {
-            self.values.managed.release(.fo(g.sdk));
+            _ = self;
             _ = g.value_arena.reset(.retain_capacity);
         }
     };
@@ -201,30 +222,35 @@ pub const Items = struct {
     }
 
     pub fn iteratorAll(self: *Items) !IteratorAll {
-        const item_catalog = try g.interop_cache.getField(self.manager, ._ItemCatalog, re.sdk.ManagedObject, .fo(g.sdk));
-        // arena allocated ValueType, reset on deinit
-        const values_collection = try g.interop_cache.callMethod(
-            item_catalog,
-            "get_Values",
-            .{},
-            .{ .type = interop.ValueType },
-            .fo(g.sdk),
-            .{},
-        );
-        const values = try values_collection.call(
-            "toArray()",
-            .{},
-            .{ .type = SystemArray },
-            &g.interop_cache,
-            .fo(g.sdk),
-            .{},
-        );
-        values.managed.addRef(.fo(g.sdk));
-        const len = try values.call(.GetLength, .fo(g.sdk), .{0});
+        const item_catalog_mo = try g.interop_cache.getField(self.manager, ._ItemCatalog, re.sdk.ManagedObject, .fo(g.sdk));
+
+        const item_catalog: *ConcurrentCatalogDictionary = @ptrCast(@alignCast(item_catalog_mo.raw));
+
+        const dict = item_catalog._Dict;
+        const count = dict._count;
+
+        const version = dict._version;
+        if (self.last_version != version) {
+            @branchHint(.cold);
+            var iter = self.items_cache.valueIterator();
+            while (iter.next()) |v| {
+                g.cache_arena.allocator().free(v.name);
+                g.cache_arena.allocator().free(v.caption);
+            }
+            self.items_cache.clearRetainingCapacity();
+            self.last_version = version;
+        }
+
+        const entries = interop.SystemArrayEntries.unsafe(.{ .raw = @ptrCast(@alignCast(dict._entries)) }, .fo(g.sdk));
+
+        if (entries.contained_type_def.getVmObjType(.fo(g.sdk)) != .valtype) {
+            return error.UnexpectedContainedType;
+        }
+
         return .{
             .owner = self,
-            .len = len,
-            .values = values,
+            .count = @intCast(count),
+            .entries = entries,
         };
     }
 

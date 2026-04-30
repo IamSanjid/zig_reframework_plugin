@@ -17,6 +17,15 @@ pub const interop = @import("interop.zig");
 
 const type_utils = @import("type_utils.zig");
 
+const root = @import("root");
+
+pub const options: Options = if (@hasDecl(root, "ref_options") and @TypeOf(root.ref_options) == Options) root.ref_options else .{};
+
+pub const Options = struct {
+    // Keep updated with https://github.com/praydog/REFramework/blob/c4b1314820d20255febf7834903e8cedb669b49c/shared/sdk/REManagedObject.cpp#L14
+    managed_object_runtime_size: usize = 0x10,
+};
+
 pub const PluginVersion = struct {
     gameName: ?[:0]const u8 = null,
     major: u32 = API_C.REFRAMEWORK_PLUGIN_VERSION_MAJOR,
@@ -37,7 +46,7 @@ pub const PluginVersion = struct {
 
 pub inline fn initPlugin(
     init: anytype,
-    comptime options: struct {
+    comptime init_conf: struct {
         requiredVersion: PluginVersion = .default,
         onPresent: ?fn () void = null,
         onPreApplicationEntry: []const struct { [:0]const u8, (fn () void) } = &.{},
@@ -53,7 +62,7 @@ pub inline fn initPlugin(
         fn initialize(init_param: [*c]const API_C.REFrameworkPluginInitializeParam) callconv(.c) bool {
             const api_instance = Api.init(init_param) catch return false;
 
-            if (options.onPresent) |f| {
+            if (init_conf.onPresent) |f| {
                 if (!api_instance.param.safe().functions.safe().on_present(&struct {
                     fn func(...) callconv(.c) void {
                         return f();
@@ -63,7 +72,7 @@ pub inline fn initPlugin(
                 }
             }
 
-            inline for (options.onPreApplicationEntry) |preEntry| {
+            inline for (init_conf.onPreApplicationEntry) |preEntry| {
                 if (!api_instance.param.safe().functions.safe().on_pre_application_entry(preEntry.@"0".ptr, &struct {
                     fn func(...) callconv(.c) void {
                         return preEntry.@"1"();
@@ -73,7 +82,7 @@ pub inline fn initPlugin(
                 }
             }
 
-            inline for (options.onPostApplicationEntry) |postEntry| {
+            inline for (init_conf.onPostApplicationEntry) |postEntry| {
                 if (!api_instance.param.safe().functions.safe().on_post_application_entry(postEntry.@"0".ptr, &struct {
                     fn func(...) callconv(.c) void {
                         return postEntry.@"1"();
@@ -83,7 +92,7 @@ pub inline fn initPlugin(
                 }
             }
 
-            if (options.onDeviceReset) |f| {
+            if (init_conf.onDeviceReset) |f| {
                 if (!api_instance.param.safe().functions.safe().on_device_reset(&struct {
                     fn func(...) callconv(.c) void {
                         return f();
@@ -93,7 +102,7 @@ pub inline fn initPlugin(
                 }
             }
 
-            if (options.onMessage) |f| {
+            if (init_conf.onMessage) |f| {
                 if (!api_instance.param.safe().functions.safe().on_message(&struct {
                     fn func(hwnd: ?*anyopaque, msg: c_uint, wparam: c_ulonglong, lparam: c_longlong) callconv(.c) bool {
                         return f(@ptrCast(hwnd), msg, wparam, lparam);
@@ -103,7 +112,7 @@ pub inline fn initPlugin(
                 }
             }
 
-            if (options.onImGuiFrame) |f| {
+            if (init_conf.onImGuiFrame) |f| {
                 if (!api_instance.param.safe().functions.safe().on_imgui_frame(&struct {
                     fn func(data: [*c]API_C.REFImGuiFrameCbData) callconv(.c) void {
                         std.debug.assert(data != null);
@@ -114,7 +123,7 @@ pub inline fn initPlugin(
                 }
             }
 
-            if (options.onImGuiDrawUI) |f| {
+            if (init_conf.onImGuiDrawUI) |f| {
                 if (!api_instance.param.safe().functions.safe().on_imgui_draw_ui(&struct {
                     fn func(data: [*c]API_C.REFImGuiFrameCbData) callconv(.c) void {
                         std.debug.assert(data != null);
@@ -125,7 +134,7 @@ pub inline fn initPlugin(
                 }
             }
 
-            if (options.onPreGuiDrawElement) |f| {
+            if (init_conf.onPreGuiDrawElement) |f| {
                 if (!api_instance.param.safe().functions.safe().on_pre_gui_draw_element(&struct {
                     fn func(gui_element: ?*anyopaque, primitive_context: ?*anyopaque) callconv(.c) bool {
                         return f(gui_element, primitive_context);
@@ -183,10 +192,10 @@ pub inline fn initPlugin(
 
         fn requiredVersion(version_res: [*c]API_C.REFrameworkPluginVersion) callconv(.c) void {
             const version: *API_C.REFrameworkPluginVersion = @ptrCast(version_res orelse return);
-            version.major = @intCast(options.requiredVersion.major);
-            version.minor = @intCast(options.requiredVersion.minor);
-            version.patch = @intCast(options.requiredVersion.patch);
-            if (options.requiredVersion.gameName) |gameName| {
+            version.major = @intCast(init_conf.requiredVersion.major);
+            version.minor = @intCast(init_conf.requiredVersion.minor);
+            version.patch = @intCast(init_conf.requiredVersion.patch);
+            if (init_conf.requiredVersion.gameName) |gameName| {
                 version.game_name = gameName.ptr;
             }
         }

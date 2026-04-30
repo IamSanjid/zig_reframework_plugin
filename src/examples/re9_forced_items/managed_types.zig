@@ -1,3 +1,5 @@
+const std = @import("std");
+
 const re = @import("reframework");
 const interop = re.interop;
 
@@ -10,28 +12,60 @@ pub const ItemDetails = struct {
     base_capacity: i32,
 };
 
-pub const SystemArray = interop.ManagedObject("System.Array", .{
-    .GetLength = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
+// Demostration on how to directly coerce to re-engine il2cpp objects and zig-land.
+
+pub const GenericDictionary = extern struct {
+    _obj_padding: [re.sdk.ManagedObject.runtime_size]u8 align(@alignOf(*anyopaque)),
+    _bucket: ?*anyopaque,
+    _entries: ?*anyopaque,
+    _fastModMultiplier: u64,
+    _comparer: ?*anyopaque,
+    _freeList: i32,
+    _freeCount: i32,
+    _version: i32,
+    _count: i32,
+};
+
+comptime {
+    std.debug.assert(@offsetOf(GenericDictionary, "_bucket") == re.sdk.ManagedObject.runtime_size + 0x0);
+    std.debug.assert(@offsetOf(GenericDictionary, "_entries") == re.sdk.ManagedObject.runtime_size + 0x8);
+    std.debug.assert(@offsetOf(GenericDictionary, "_version") == re.sdk.ManagedObject.runtime_size + 0x28);
+    std.debug.assert(@offsetOf(GenericDictionary, "_count") == re.sdk.ManagedObject.runtime_size + 0x2c);
+}
+
+pub const ConcurrentCatalogDictionary = extern struct {
+    _obj_padding: [re.sdk.ManagedObject.runtime_size]u8 align(@alignOf(*anyopaque)),
+    _Dict: *GenericDictionary,
+};
+
+comptime {
+    std.debug.assert(@offsetOf(ConcurrentCatalogDictionary, "_Dict") == re.sdk.ManagedObject.runtime_size + 0x0);
+}
+
+pub fn SystemArray(comptime T: type) type {
+    return interop.ManagedObject("System.Array", .{
+        .GetLength = .{
+            .params = .{
+                .{ .type_name = "System.Int32", .type = i32 },
+            },
+            .ret = .{ .type = i32 },
         },
-        .ret = .{ .type = i32 },
-    },
-    .GetValue = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
+        .GetValue = .{
+            .params = .{
+                .{ .type_name = "System.Int32", .type = i32 },
+            },
+            .ret = .{ .type = ?T },
         },
-        .ret = .{ .type = ?re.api.sdk.ManagedObject },
-    },
-    .SetValue = .{
-        .params = .{
-            // The signature becomes only the method name, no param type is included.
-            .{ .type_name = null, .type = re.api.sdk.ManagedObject },
-            .{ .type_name = "System.Int32", .type = i32 },
+        .SetValue = .{
+            .params = .{
+                // The signature becomes only the method name, no param type is included.
+                .{ .type_name = null, .type = T },
+                .{ .type_name = "System.Int32", .type = i32 },
+            },
+            .ret = .{ .type = void },
         },
-        .ret = .{ .type = void },
-    },
-}, .{});
+    }, .{});
+}
 
 pub const SystemGuid = interop.ValueType;
 

@@ -730,6 +730,64 @@ pub const ValueType = struct {
     }
 };
 
+pub const ValueTypeView = struct {
+    data: *?*anyopaque,
+    type_def: api.sdk.TypeDefinition,
+
+    const Self = @This();
+
+    pub inline fn boxed(self: Self, allocator: std.mem.Allocator, sdk: ManagedSdk) !ValueType {
+        return try ValueType.init(allocator, sdk, self.data, self.type_def);
+    }
+
+    pub inline fn valuePtr(self: Self) ?*anyopaque {
+        return @ptrCast(self.data);
+    }
+
+    pub inline fn get(
+        self: Self,
+        comptime field_data: anytype,
+        comptime T: type,
+        cache: *ManagedTypeCache,
+        sdk: api.VerifiedSdk(.{
+            .field = sdk_managed_specs.field,
+            .managed_object = sdk_managed_specs.managed_object,
+            .type_definition = .all,
+        }),
+    ) !T {
+        return cache.getFieldFromTypeDef(
+            .fo(sdk),
+            self.type_def,
+            self.valuePtr(),
+            T,
+            field_data,
+            false,
+        );
+    }
+
+    pub inline fn set(
+        self: Self,
+        comptime field_data: anytype,
+        cache: *ManagedTypeCache,
+        sdk: api.VerifiedSdk(.{
+            .field = sdk_managed_specs.field,
+            .managed_object = sdk_managed_specs.managed_object,
+            .type_definition = .all,
+        }),
+        value: anytype,
+    ) !void {
+        return cache.setFieldFromTypeDef(
+            .fo(sdk),
+            self.type_def,
+            self.valuePtr(),
+            field_data,
+            false,
+            false,
+            value,
+        );
+    }
+};
+
 pub const SystemStringView = struct {
     data: [:0]const u16,
 };
@@ -934,6 +992,32 @@ inline fn systemStrPtr(
     const field_offset_ptr: *u32 = @ptrFromInt(field_offset.* - @sizeOf(*anyopaque));
     return @ptrFromInt(ptr + field_offset_ptr.* + 4);
 }
+
+pub const SystemArrayEntries = struct {
+    ptr: ?*anyopaque,
+    len: usize,
+    contained_type_def: api.sdk.TypeDefinition,
+
+    pub inline fn unsafe(managed: api.sdk.ManagedObject, sdk: ManagedSdk) SystemArrayEntries {
+        @setRuntimeSafety(false);
+        const ptr_usize: usize = @intFromPtr(managed.raw);
+        const size_of_rearraybase = managed_object_runtime_size + 0x10;
+        const contained_type_def_ptr: *api.sdk.TypeDefinition = @ptrFromInt(ptr_usize + managed_object_runtime_size);
+        var contained_type_def = contained_type_def_ptr.*;
+        // RE7?
+        if (managed_object_runtime_size > 0x10 and contained_type_def.getVmObjType(.fo(sdk)) == .unknown) {
+            const contained_type_def_ptr2: **api.sdk.TypeDefinition = @ptrFromInt(ptr_usize + managed_object_runtime_size);
+            contained_type_def = contained_type_def_ptr2.*.*;
+        }
+        const len_ptr: *u32 = @ptrFromInt(ptr_usize + size_of_rearraybase - @sizeOf(u32));
+        const ptr: ?*anyopaque = @ptrFromInt(ptr_usize + size_of_rearraybase);
+        return .{
+            .ptr = ptr,
+            .len = len_ptr.*,
+            .contained_type_def = contained_type_def,
+        };
+    }
+};
 
 // TODO: Implement more cases:
 // https://github.com/praydog/REFramework/blob/ea66d322fbe2ebb7e2efd8fd6aa6b06779da6f76/src/mods/bindings/Sdk.cpp#L927
