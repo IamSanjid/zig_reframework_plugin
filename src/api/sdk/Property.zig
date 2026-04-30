@@ -1,11 +1,11 @@
 const API = @import("API");
 
-raw: API.REFrameworkPropertyHandle,
+pub const Property = extern struct {
+    raw: API.REFrameworkPropertyHandle,
 
-const Property = @This();
+    const Self = @This();
 
-pub inline fn handle(self: Property) API.REFrameworkPropertyHandle {
-    return self.raw;
-}
-
-// TODO: Update with REFramework
+    pub inline fn handle(self: Self) API.REFrameworkPropertyHandle {
+        return self.raw;
+    }
+};

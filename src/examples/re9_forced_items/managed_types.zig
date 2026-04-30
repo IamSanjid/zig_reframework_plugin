@@ -17,7 +17,7 @@ pub const ItemDetails = struct {
 pub const GenericDictionary = extern struct {
     _obj_padding: [re.sdk.ManagedObject.runtime_size]u8 align(@alignOf(*anyopaque)),
     _bucket: ?*anyopaque,
-    _entries: ?*anyopaque,
+    _entries: re.sdk.ManagedObject,
     _fastModMultiplier: u64,
     _comparer: ?*anyopaque,
     _freeList: i32,
@@ -27,8 +27,8 @@ pub const GenericDictionary = extern struct {
 };
 
 comptime {
-    std.debug.assert(@offsetOf(GenericDictionary, "_bucket") == re.sdk.ManagedObject.runtime_size + 0x0);
-    std.debug.assert(@offsetOf(GenericDictionary, "_entries") == re.sdk.ManagedObject.runtime_size + 0x8);
+    std.debug.assert(@offsetOf(GenericDictionary, "_bucket") == re.sdk.ManagedObject.runtime_size + 0x00);
+    std.debug.assert(@offsetOf(GenericDictionary, "_entries") == re.sdk.ManagedObject.runtime_size + 0x08);
     std.debug.assert(@offsetOf(GenericDictionary, "_version") == re.sdk.ManagedObject.runtime_size + 0x28);
     std.debug.assert(@offsetOf(GenericDictionary, "_count") == re.sdk.ManagedObject.runtime_size + 0x2c);
 }
@@ -40,6 +40,16 @@ pub const ConcurrentCatalogDictionary = extern struct {
 
 comptime {
     std.debug.assert(@offsetOf(ConcurrentCatalogDictionary, "_Dict") == re.sdk.ManagedObject.runtime_size + 0x0);
+}
+
+pub const ItemManager = extern struct {
+    _obj_padding: [re.sdk.ManagedObject.runtime_size]u8 align(@alignOf(*anyopaque)),
+    _padding1: [0xe0]u8 align(@alignOf(*anyopaque)),
+    _ItemCatalog: *ConcurrentCatalogDictionary,
+};
+
+comptime {
+    std.debug.assert(@offsetOf(ItemManager, "_ItemCatalog") == re.sdk.ManagedObject.runtime_size + 0xe0);
 }
 
 pub fn SystemArray(comptime T: type) type {
@@ -74,7 +84,7 @@ pub const ItemId = re.sdk.ManagedObject;
 
 pub const InventoryPanelShapeSetting = interop.ManagedObject("app.InventoryPanelShapeSetting", .{}, .{
     ._BaseShapeTypeCache = .{ .type = re.sdk.ManagedObject },
-    ._BaseShapeTypeStr = .{ .type = interop.SystemString },
+    ._BaseShapeTypeStr = .{ .type = interop.SystemStringView },
 });
 
 pub const InventorySlotCapacitySetting = interop.ManagedObject("app.InventorySlotCapacitySetting", .{}, .{

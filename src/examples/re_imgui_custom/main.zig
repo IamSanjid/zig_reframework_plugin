@@ -49,10 +49,12 @@ pub const std_options: std.Options = .{
     .logFn = pluginLog,
 };
 
+const log = std.log.scoped(.re_imgui_custom);
+
 fn init(api: re.Api) !void {
     g_state.api = api;
 
-    std.log.info(
+    log.info(
         "RE ImGui example with custom renderer! Required REFramework Version: {}.{}.{}",
         .{
             re.PluginVersion.default.major,
@@ -171,7 +173,7 @@ fn onNewFrame() !void {
 
 fn onPresent() void {
     onNewFrame() catch |e| {
-        std.log.err("Error newFrame: {}", .{e});
+        log.err("Error newFrame: {}", .{e});
     };
 }
 
@@ -247,7 +249,7 @@ fn onMessage(hwnd: windows.HWND, msg: windows.UINT, wparam: win32.foundation.WPA
 }
 
 fn onDeviceReset() void {
-    std.log.info("Device reset detected, shutting down ImGui", .{});
+    log.info("Device reset detected, shutting down ImGui", .{});
 
     imgui_initialized = false;
     switch (g_state.renderer_type) {

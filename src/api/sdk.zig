@@ -1,18 +1,18 @@
 const std = @import("std");
 
-pub const Field = @import("sdk/Field.zig");
-pub const ManagedObject = @import("sdk/ManagedObject.zig");
-pub const Method = @import("sdk/Method.zig");
-pub const Module = @import("sdk/Module.zig");
-pub const Property = @import("sdk/Property.zig");
-pub const ReflectionMethod = @import("sdk/ReflectionMethod.zig");
-pub const ReflectionProperty = @import("sdk/ReflectionProperty.zig");
-pub const Resource = @import("sdk/Resource.zig");
-pub const ResourceManager = @import("sdk/ResourceManager.zig");
-pub const Tdb = @import("sdk/Tdb.zig");
-pub const TypeDefinition = @import("sdk/TypeDefinition.zig");
-pub const TypeInfo = @import("sdk/TypeInfo.zig");
-pub const VmContext = @import("sdk/VmContext.zig");
+pub const Field = @import("sdk/field.zig").Field;
+pub const ManagedObject = @import("sdk/managed_object.zig").ManagedObject;
+pub const Method = @import("sdk/method.zig").Method;
+pub const Module = @import("sdk/module.zig").Module;
+pub const Property = @import("sdk/property.zig").Property;
+pub const ReflectionMethod = @import("sdk/reflection_method.zig").ReflectionMethod;
+pub const ReflectionProperty = @import("sdk/reflection_property.zig").ReflectionProperty;
+pub const Resource = @import("sdk/resource.zig").Resource;
+pub const ResourceManager = @import("sdk/resource_manager.zig").ResourceManager;
+pub const Tdb = @import("sdk/tdb.zig").Tdb;
+pub const TypeDefinition = @import("sdk/type_definition.zig").TypeDefinition;
+pub const TypeInfo = @import("sdk/type_info.zig").TypeInfo;
+pub const VmContext = @import("sdk/vm_context.zig").VmContext;
 
 const API = @import("API");
 const Verified = @import("verified.zig").Verified;
@@ -22,7 +22,7 @@ const REFrameworkError = re_error.REFrameworkError;
 
 const VerifiedSdk = Verified(API.REFrameworkSDKData, .{});
 
-pub const ManagedSingleton = struct {
+pub const ManagedSingleton = extern struct {
     raw: API.REFrameworkManagedSingleton,
 
     const Self = @This();
@@ -45,7 +45,7 @@ comptime {
     @import("std").debug.assert(@alignOf(ManagedSingleton) == @alignOf(API.REFrameworkManagedSingleton));
 }
 
-pub const NativeSingleton = struct {
+pub const NativeSingleton = extern struct {
     raw: API.REFrameworkNativeSingleton,
 
     const Self = @This();

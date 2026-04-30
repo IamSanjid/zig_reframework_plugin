@@ -68,7 +68,7 @@ var auto_save_slots: i32 = 0;
 fn init(api: re.Api) !void {
     g_state.api = api;
 
-    std.log.info(
+    log.info(
         "RE9 Save Slot increase in Zig! Required REFramework Version: {}.{}.{}",
         .{
             re.PluginVersion.default.major,
@@ -80,12 +80,12 @@ fn init(api: re.Api) !void {
     g_state.sdk = try g_state.api.verifiedSdk(re.api.specs.minimal.sdk);
 
     const tdb = re.sdk.getTdb(.fo(g_state.sdk)) orelse {
-        std.log.err("Failed to get TDB", .{});
+        log.err("Failed to get TDB", .{});
         return;
     };
 
     const m1 = (try tdbGetMethod(tdb, "app.GuiSaveLoadController.Unit", "onSetup")) orelse {
-        std.log.err("Failed to find method app.GuiSaveLoadController.Unit.onSetup", .{});
+        log.err("Failed to find method app.GuiSaveLoadController.Unit.onSetup", .{});
         return;
     };
     _ = m1.addHook(
@@ -130,7 +130,7 @@ fn init(api: re.Api) !void {
     );
 
     const m2 = (try tdbGetMethod(tdb, "app.GuiSaveLoadModel", "makeSaveDataList")) orelse {
-        std.log.err("Failed to find method app.GuiSaveLoadModel.makeSaveDataList", .{});
+        log.err("Failed to find method app.GuiSaveLoadModel.makeSaveDataList", .{});
         return;
     };
     _ = m2.addHook(
@@ -200,7 +200,7 @@ fn init(api: re.Api) !void {
                     new_save_info.managed.addRef(.fo(g_state.sdk));
                 }
 
-                std.log.info("Expanded makeSaveDataList: {} -> {}", .{ len, max_save_games_with_auto });
+                log.info("Expanded makeSaveDataList: {} -> {}", .{ len, max_save_games_with_auto });
                 retval_ptr.* = @ptrCast(@alignCast(new_arr_mo.raw));
             }
         }.func,

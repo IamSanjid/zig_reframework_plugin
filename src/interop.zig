@@ -730,64 +730,6 @@ pub const ValueType = struct {
     }
 };
 
-pub const ValueTypeView = struct {
-    data: *?*anyopaque,
-    type_def: api.sdk.TypeDefinition,
-
-    const Self = @This();
-
-    pub inline fn boxed(self: Self, allocator: std.mem.Allocator, sdk: ManagedSdk) !ValueType {
-        return try ValueType.init(allocator, sdk, self.data, self.type_def);
-    }
-
-    pub inline fn valuePtr(self: Self) ?*anyopaque {
-        return @ptrCast(self.data);
-    }
-
-    pub inline fn get(
-        self: Self,
-        comptime field_data: anytype,
-        comptime T: type,
-        cache: *ManagedTypeCache,
-        sdk: api.VerifiedSdk(.{
-            .field = sdk_managed_specs.field,
-            .managed_object = sdk_managed_specs.managed_object,
-            .type_definition = .all,
-        }),
-    ) !T {
-        return cache.getFieldFromTypeDef(
-            .fo(sdk),
-            self.type_def,
-            self.valuePtr(),
-            T,
-            field_data,
-            false,
-        );
-    }
-
-    pub inline fn set(
-        self: Self,
-        comptime field_data: anytype,
-        cache: *ManagedTypeCache,
-        sdk: api.VerifiedSdk(.{
-            .field = sdk_managed_specs.field,
-            .managed_object = sdk_managed_specs.managed_object,
-            .type_definition = .all,
-        }),
-        value: anytype,
-    ) !void {
-        return cache.setFieldFromTypeDef(
-            .fo(sdk),
-            self.type_def,
-            self.valuePtr(),
-            field_data,
-            false,
-            false,
-            value,
-        );
-    }
-};
-
 pub const SystemStringView = struct {
     data: [:0]const u16,
 };
@@ -995,7 +937,7 @@ inline fn systemStrPtr(
 
 pub const SystemArrayEntries = struct {
     ptr: ?*anyopaque,
-    len: usize,
+    len: u32,
     contained_type_def: api.sdk.TypeDefinition,
 
     pub inline fn unsafe(managed: api.sdk.ManagedObject, sdk: ManagedSdk) SystemArrayEntries {

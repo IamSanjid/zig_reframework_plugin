@@ -47,6 +47,8 @@ pub const std_options: std.Options = .{
     .logFn = pluginLog,
 };
 
+const log = std.log.scoped(.re9_basic);
+
 const PlayerEquipment = managed_types.PlayerEquipment;
 const HitPoint = managed_types.HitPoint;
 const PlayerContext = managed_types.PlayerContext;
@@ -61,7 +63,7 @@ const InventoryManager = managed_types.InventoryManager;
 fn init(api: re.Api) !void {
     g_state.api = api;
 
-    std.log.info(
+    log.info(
         "RE9 Basic Hacks in Zig! Required REFramework Version: {}.{}.{}",
         .{
             re.PluginVersion.default.major,
@@ -90,7 +92,7 @@ fn init(api: re.Api) !void {
         null,
         false,
     );
-    std.log.info("Hooked app.PlayerEquipment.consumeLoading id: {d}", .{consume_loading_hook});
+    log.info("Hooked app.PlayerEquipment.consumeLoading id: {d}", .{consume_loading_hook});
 }
 
 // var hacked_hp: bool = false;
@@ -128,7 +130,7 @@ fn applyHPHack() !void {
     if (max_hp > 0 and cur_hp < max_hp) {
         try hit_point.call(.resetHitPoint, .fo(g_state.sdk), .{max_hp});
     }
-    // std.log.info("Hacked Infinite HP! HP: {}/{}", .{ cur_hp, max_hp });
+    // log.info("Hacked Infinite HP! HP: {}/{}", .{ cur_hp, max_hp });
     // hacked_hp = true;
 }
 
@@ -182,7 +184,7 @@ fn applyInfiniteAmmoHack() !void {
     //infinite_rocket = try item_mgr.get(._InfinityRocketLauncher, .fo(g_state.sdk));
     // hacked_ammo = infinite_gun and infinite_axe and infinite_rocket;
     // if (hacked_ammo) {
-    //     std.log.info("Hacked Infinite Ammo!", .{});
+    //     log.info("Hacked Infinite Ammo!", .{});
     // }
 }
 
@@ -371,15 +373,15 @@ fn onUpdate() void {
     onNewFrame() catch |e| {
         if (g_state.interop_cache.ownDiagnostics()) |val| {
             if (val.len > 0) {
-                std.log.err("Interop error: \n{s}", .{val});
+                log.err("Interop error: \n{s}", .{val});
             }
         } else |_| {}
-        std.log.err("Error newFrame: {}", .{e});
+        log.err("Error newFrame: {}", .{e});
     };
 }
 
 fn onDeviceReset() void {
-    std.log.info("Device reset detected, clearing interop cache", .{});
+    log.info("Device reset detected, clearing interop cache", .{});
 
     g_state.interop_cache.deinit();
     threaded.deinit();
@@ -401,7 +403,7 @@ comptime {
                 @setRuntimeSafety(false);
 
                 cimgui_dll.init() catch |e| {
-                    std.log.err("Dynamic cimgui initialization failed: {}", .{e});
+                    log.err("Dynamic cimgui initialization failed: {}", .{e});
                     return;
                 };
 
@@ -413,7 +415,7 @@ comptime {
                 );
 
                 drawUI() catch |e| {
-                    std.log.err("Error drawing UI: {}", .{e});
+                    log.err("Error drawing UI: {}", .{e});
                 };
             }
         }.func,

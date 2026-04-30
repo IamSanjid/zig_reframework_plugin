@@ -18,10 +18,9 @@ const ItemDetailData = managed_types.ItemDetailData;
 const ItemCategory = managed_types.ItemCategory;
 const ItemId = managed_types.ItemId;
 
-const ItemManager = re.sdk.ManagedObject;
-
 const GenericDictionary = managed_types.GenericDictionary;
 const ConcurrentCatalogDictionary = managed_types.ConcurrentCatalogDictionary;
+const ItemManager = managed_types.ItemManager;
 
 pub fn pluginLog(
     comptime message_level: std.log.Level,
@@ -75,7 +74,8 @@ pub const g = struct {
         g.sdk = try api.verifiedSdk(verified_sdk_spec);
         g.tdb = re.sdk.getTdb(.fo(g.sdk)) orelse return error.TdbNotFound;
 
-        items = .init(re.sdk.getManagedSingleton(.fo(g.sdk), "app.ItemManager") orelse return error.ItemManagerNotFound);
+        const item_mgr_mo = re.sdk.getManagedSingleton(.fo(g.sdk), "app.ItemManager") orelse return error.ItemManagerNotFound;
+        items = .init(@ptrCast(@alignCast(item_mgr_mo.raw)));
     }
 
     fn attach() void {
@@ -100,7 +100,7 @@ pub const g = struct {
 pub const Items = struct {
     categories: std.AutoHashMap(ItemCategory, [:0]const u8),
     items_cache: std.AutoHashMap(ItemId, ItemDetails),
-    manager: ItemManager,
+    manager: *ItemManager,
     last_version: i32 = 0,
 
     pub const IteratorAll = struct {
@@ -112,8 +112,8 @@ pub const Items = struct {
         const Entry = extern struct {
             hash_code: i32,
             next: i32,
-            key: ?*anyopaque,
-            kvp: ?*anyopaque,
+            key: ItemId,
+            kvp: re.sdk.ManagedObject,
         };
         comptime {
             std.debug.assert(@offsetOf(Entry, "key") == 0x08);
@@ -134,13 +134,13 @@ pub const Items = struct {
                 const entry_ptr_usize = @intFromPtr(self.entries.ptr) + (self.next_idx * element_size);
                 const entry: *Entry = @ptrFromInt(entry_ptr_usize);
 
-                const id: ItemId = .{ .raw = @ptrCast(@alignCast(entry.key)) };
+                const id: ItemId = entry.key;
 
                 const item_entry = self.owner.items_cache.getOrPut(id) catch continue;
                 if (item_entry.found_existing) {
                     return item_entry.value_ptr.*;
                 } else {
-                    const kvp: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(entry.kvp)) };
+                    const kvp = entry.kvp;
                     const item_detail = g.interop_cache.getField(kvp, ._Value, ItemDetailData, .fo(g.sdk)) catch continue;
                     const item_category = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
 
@@ -213,7 +213,7 @@ pub const Items = struct {
         }
     };
 
-    fn init(manager: ItemManager) Items {
+    fn init(manager: *ItemManager) Items {
         return Items{
             .categories = .init(g.cache_arena.allocator()),
             .items_cache = .init(g.cache_arena.allocator()),
@@ -222,9 +222,7 @@ pub const Items = struct {
     }
 
     pub fn iteratorAll(self: *Items) !IteratorAll {
-        const item_catalog_mo = try g.interop_cache.getField(self.manager, ._ItemCatalog, re.sdk.ManagedObject, .fo(g.sdk));
-
-        const item_catalog: *ConcurrentCatalogDictionary = @ptrCast(@alignCast(item_catalog_mo.raw));
+        const item_catalog: *ConcurrentCatalogDictionary = self.manager._ItemCatalog;
 
         const dict = item_catalog._Dict;
         const count = dict._count;
@@ -241,7 +239,7 @@ pub const Items = struct {
             self.last_version = version;
         }
 
-        const entries = interop.SystemArrayEntries.unsafe(.{ .raw = @ptrCast(@alignCast(dict._entries)) }, .fo(g.sdk));
+        const entries = interop.SystemArrayEntries.unsafe(dict._entries, .fo(g.sdk));
 
         if (entries.contained_type_def.getVmObjType(.fo(g.sdk)) != .valtype) {
             return error.UnexpectedContainedType;
