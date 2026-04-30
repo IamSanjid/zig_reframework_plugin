@@ -80,7 +80,7 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
     g.api.lockLua();
     defer g.api.unlockLua();
 
-    if (g.items.catalog.count() == 0) {
+    if (g.items.categories.count() == 0) {
         cimgui_dll.igText("No item info found. Please reload/load a save-data.");
         return;
     }
@@ -105,114 +105,54 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
 
     var items_local_id: i32 = 0;
 
-    if (u.current_category) |selected| {
-        var iter = g.items.iterator(selected);
-        if (iter.isEmpty()) {
-            cimgui_dll.igTableNextRow(0, 0.0);
-
-            _ = cimgui_dll.igTableNextColumn();
-            cimgui_dll.igDummy(.{});
-
-            _ = cimgui_dll.igTableNextColumn();
-            cimgui_dll.igText("No items found for this category.");
-
-            _ = cimgui_dll.igTableNextColumn();
-            cimgui_dll.igDummy(.{});
-
-            _ = cimgui_dll.igTableNextColumn();
-            cimgui_dll.igDummy(.{});
-            return;
-        }
-        while (iter.next()) |item| {
-            if (!u.show_unknown_items and std.ascii.startsWithIgnoreCase(item.name, "Unknown")) {
+    var iter = try g.items.iteratorAll();
+    defer iter.deinit();
+    while (try iter.next()) |item| {
+        if (u.current_category) |selected| {
+            if (item.category.raw != selected.raw) {
                 continue;
             }
-            defer items_local_id += 1;
-
-            cimgui_dll.igTableNextRow(0, 0.0);
-
-            _ = cimgui_dll.igTableNextColumn();
-            cimgui_dll.igText(item.name);
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip(
-                    "ID: 0x%x\nBase Item Box Capacity: %d\nBase Capacity: %d",
-                    @intFromPtr(item.id.raw),
-                    item.base_item_box_capacity,
-                    item.base_capacity,
-                );
-            }
-
-            _ = cimgui_dll.igTableNextColumn();
-            cimgui_dll.igText(item.caption);
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip(
-                    "ID: 0x%x\nBase Item Box Capacity: %d\nBase Capacity: %d",
-                    @intFromPtr(item.id.raw),
-                    item.base_item_box_capacity,
-                    item.base_capacity,
-                );
-            }
-
-            _ = cimgui_dll.igTableNextColumn();
-            const category_name = g.items.categories.get(item.category) orelse "Unknown";
-            cimgui_dll.igText(category_name);
-
-            _ = cimgui_dll.igTableNextColumn();
-            const add_btn_label = try std.fmt.bufPrintZ(&label_buf, "Add##{}", .{items_local_id});
-            if (cimgui_dll.igButton(add_btn_label, .{})) {}
-            if (item.base_capacity > 1) {
-                cimgui_dll.igSameLine(0, -1.0);
-                const add_max_btn_lbl = try std.fmt.bufPrintZ(&label_buf, "Add {}##{}", .{ item.base_capacity, items_local_id });
-                if (cimgui_dll.igButton(add_max_btn_lbl, .{})) {}
-            }
         }
-    } else {
-        var categories = g.items.categoriesIterator();
-        while (categories.next()) |entry| {
-            var iter = g.items.iterator(entry.category);
-            if (iter.isEmpty()) {
-                cimgui_dll.igTableNextRow(0, 20.0);
+        if (!u.show_unknown_items and std.ascii.startsWithIgnoreCase(item.name, "Unknown")) {
+            continue;
+        }
+        defer items_local_id += 1;
 
-                _ = cimgui_dll.igTableNextColumn();
-                cimgui_dll.igSeparatorText("");
+        cimgui_dll.igTableNextRow(0, 0.0);
 
-                _ = cimgui_dll.igTableNextColumn();
-                cimgui_dll.igText("No items found for this category.");
+        _ = cimgui_dll.igTableNextColumn();
+        cimgui_dll.igText(item.name);
+        if (cimgui_dll.igIsItemHovered(0)) {
+            cimgui_dll.igSetTooltip(
+                "ID: 0x%x\nBase Item Box Capacity: %d\nBase Capacity: %d",
+                @intFromPtr(item.id.raw),
+                item.base_item_box_capacity,
+                item.base_capacity,
+            );
+        }
 
-                _ = cimgui_dll.igTableNextColumn();
-                cimgui_dll.igText(entry.name);
+        _ = cimgui_dll.igTableNextColumn();
+        cimgui_dll.igText(item.caption);
+        if (cimgui_dll.igIsItemHovered(0)) {
+            cimgui_dll.igSetTooltip(
+                "ID: 0x%x\nBase Item Box Capacity: %d\nBase Capacity: %d",
+                @intFromPtr(item.id.raw),
+                item.base_item_box_capacity,
+                item.base_capacity,
+            );
+        }
 
-                _ = cimgui_dll.igTableNextColumn();
-                cimgui_dll.igSeparatorText("");
-                continue;
-            }
+        _ = cimgui_dll.igTableNextColumn();
+        const category_name = g.items.categories.get(item.category) orelse "Unknown";
+        cimgui_dll.igText(category_name);
 
-            while (iter.next()) |item| {
-                if (!u.show_unknown_items and std.ascii.startsWithIgnoreCase(item.name, "Unknown")) {
-                    continue;
-                }
-                defer items_local_id += 1;
-
-                cimgui_dll.igTableNextRow(0, 0.0);
-
-                _ = cimgui_dll.igTableNextColumn();
-                cimgui_dll.igText(item.name);
-
-                _ = cimgui_dll.igTableNextColumn();
-                cimgui_dll.igText(item.caption);
-
-                _ = cimgui_dll.igTableNextColumn();
-                cimgui_dll.igText(entry.name);
-
-                _ = cimgui_dll.igTableNextColumn();
-                const add_btn_label = try std.fmt.bufPrintZ(&label_buf, "Add##{}", .{items_local_id});
-                if (cimgui_dll.igButton(add_btn_label, .{})) {}
-                if (item.base_capacity > 1) {
-                    cimgui_dll.igSameLine(0, -1.0);
-                    const add_max_btn_lbl = try std.fmt.bufPrintZ(&label_buf, "Add {}##{}", .{ item.base_capacity, items_local_id });
-                    if (cimgui_dll.igButton(add_max_btn_lbl, .{})) {}
-                }
-            }
+        _ = cimgui_dll.igTableNextColumn();
+        const add_btn_label = try std.fmt.bufPrintZ(&label_buf, "Add##{}", .{items_local_id});
+        if (cimgui_dll.igButton(add_btn_label, .{})) {}
+        if (item.base_capacity > 1) {
+            cimgui_dll.igSameLine(0, -1.0);
+            const add_max_btn_lbl = try std.fmt.bufPrintZ(&label_buf, "Add {}##{}", .{ item.base_capacity, items_local_id });
+            if (cimgui_dll.igButton(add_max_btn_lbl, .{})) {}
         }
     }
 }

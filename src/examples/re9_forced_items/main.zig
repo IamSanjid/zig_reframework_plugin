@@ -18,6 +18,8 @@ const ItemDetailData = managed_types.ItemDetailData;
 const ItemCategory = managed_types.ItemCategory;
 const ItemId = managed_types.ItemId;
 
+const ItemManager = re.sdk.ManagedObject;
+
 pub fn pluginLog(
     comptime message_level: std.log.Level,
     comptime scope: @EnumLiteral(),
@@ -49,34 +51,150 @@ const verified_sdk_spec = re.api.specs.extend(
     .{ .field = .{ .extend = .{.get_name} } },
 );
 
+pub const g = struct {
+    pub var allocator: std.mem.Allocator = undefined;
+    pub var io: std.Io = undefined;
+    pub var interop_cache: re.interop.ManagedTypeCache = undefined;
+    pub var api: re.api.Api = undefined;
+    pub var sdk: re.api.VerifiedSdk(verified_sdk_spec) = undefined;
+    pub var tdb: re.sdk.Tdb = undefined;
+
+    pub var items: Items = undefined;
+
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+    var threaded: std.Io.Threaded = undefined;
+
+    pub var value_arena: std.heap.ArenaAllocator = .init(debug_allocator.allocator());
+    pub var cache_arena: std.heap.ArenaAllocator = .init(debug_allocator.allocator());
+
+    fn init(init_api: re.Api) !void {
+        api = init_api;
+        g.sdk = try api.verifiedSdk(verified_sdk_spec);
+        g.tdb = re.sdk.getTdb(.fo(g.sdk)) orelse return error.TdbNotFound;
+
+        items = .init(re.sdk.getManagedSingleton(.fo(g.sdk), "app.ItemManager") orelse return error.ItemManagerNotFound);
+    }
+
+    fn attach() void {
+        threaded = .init(debug_allocator.allocator(), .{});
+        allocator = debug_allocator.allocator();
+        io = threaded.io();
+        interop_cache = .init(cache_arena.allocator(), value_arena.allocator(), io);
+    }
+
+    fn reset() void {
+        interop_cache.deinit();
+
+        _ = value_arena.reset(.free_all);
+        _ = cache_arena.reset(.free_all);
+
+        threaded.deinit();
+        _ = debug_allocator.detectLeaks();
+        _ = debug_allocator.deinit();
+    }
+};
+
 pub const Items = struct {
     categories: std.AutoHashMap(ItemCategory, [:0]const u8),
-    catalog: std.AutoHashMap(ItemCategory, std.ArrayList(ItemDetails)),
-
-    pub const Iterator = struct {
-        items: []ItemDetails,
-        next_idx: usize = 0,
-
-        pub fn next(self: *Iterator) ?ItemDetails {
-            if (self.next_idx >= self.items.len) return null;
-            const item = self.items[self.next_idx];
-            self.next_idx += 1;
-            return item;
-        }
-
-        pub fn isEmpty(self: *Iterator) bool {
-            return self.items.len == 0;
-        }
-    };
+    name_cache: std.AutoHashMap(ItemId, [:0]const u8),
+    caption_cache: std.AutoHashMap(ItemId, [:0]const u8),
+    manager: ItemManager,
 
     pub const IteratorAll = struct {
-        owner: *const Items,
-        category_iter: std.AutoHashMap(ItemCategory, std.ArrayList(ItemDetails)).KeyIterator,
-        current_category: ?ItemCategory = null,
+        owner: *Items,
+        values: SystemArray,
+        len: i32,
+        next_idx: i32 = 0,
 
-        pub fn next(self: *IteratorAll) ?Iterator {
-            self.current_category = self.category_iter.next();
-            return self.owner.iterator(self.current_category orelse return null);
+        pub fn next(self: *IteratorAll) !?ItemDetails {
+            if (self.next_idx >= self.len) return null;
+
+            while (self.next_idx < self.len) {
+                defer self.next_idx += 1;
+
+                const item_detail_mo = (try self.values.call(.GetValue, .fo(g.sdk), .{self.next_idx})) orelse
+                    return error.ItemDetailDataNotFound;
+
+                const item_detail = ItemDetailData.init(&g.interop_cache, .fo(g.sdk), item_detail_mo) catch continue;
+                const item_category = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
+
+                const id = item_detail.get(._ItemID, .fo(g.sdk)) catch continue;
+
+                const name = blk: {
+                    const name_entry = try self.owner.name_cache.getOrPut(id);
+                    if (name_entry.found_existing) {
+                        break :blk name_entry.value_ptr.*;
+                    } else {
+                        // arena allocated ValueType, reset on deinit
+                        const name_message_id = item_detail.get(._NameMessageId, .fo(g.sdk)) catch continue;
+
+                        const name_message = g.interop_cache.callStaticMethod(
+                            "via.gui.message",
+                            "get(System.Guid)",
+                            .{},
+                            .{ .type = interop.SystemStringView },
+                            .fo(g.sdk),
+                            .{name_message_id},
+                        ) catch continue;
+
+                        var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.cache_arena.allocator(), name_message.data);
+
+                        if (name_message_utf8.len == 0) {
+                            name_message_utf8 = try std.fmt.allocPrintSentinel(g.cache_arena.allocator(), "UnknownName_{}", .{self.next_idx}, 0);
+                        }
+
+                        name_entry.value_ptr.* = name_message_utf8;
+
+                        break :blk name_message_utf8;
+                    }
+                };
+
+                const caption = blk: {
+                    const caption_entry = try self.owner.caption_cache.getOrPut(id);
+                    if (caption_entry.found_existing) {
+                        break :blk caption_entry.value_ptr.*;
+                    } else {
+                        // arena allocated ValueType, reset on deinit
+                        const caption_message_id = item_detail.get(._CaptionMessageId, .fo(g.sdk)) catch continue;
+
+                        const caption_message = g.interop_cache.callStaticMethod(
+                            "via.gui.message",
+                            "get(System.Guid)",
+                            .{},
+                            .{ .type = interop.SystemStringView },
+                            .fo(g.sdk),
+                            .{caption_message_id},
+                        ) catch continue;
+
+                        var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.cache_arena.allocator(), caption_message.data);
+
+                        if (caption_message_utf8.len == 0) {
+                            caption_message_utf8 = try std.fmt.allocPrintSentinel(g.cache_arena.allocator(), "UnknownCaption_{}", .{self.next_idx}, 0);
+                        }
+
+                        caption_entry.value_ptr.* = caption_message_utf8;
+
+                        break :blk caption_message_utf8;
+                    }
+                };
+
+                const slot_capacity_data = item_detail.get(._SlotCapacityData, .fo(g.sdk)) catch continue;
+                return ItemDetails{
+                    .id = id,
+                    .category = item_category,
+                    .name = name,
+                    .caption = caption,
+                    .base_capacity = slot_capacity_data.get(._BaseCapacity, .fo(g.sdk)) catch continue,
+                    .base_item_box_capacity = slot_capacity_data.get(._BaseItemBoxCapacity, .fo(g.sdk)) catch continue,
+                };
+            }
+
+            return null;
+        }
+
+        pub fn deinit(self: IteratorAll) void {
+            self.values.managed.release(.fo(g.sdk));
+            _ = g.value_arena.reset(.retain_capacity);
         }
     };
 
@@ -95,49 +213,40 @@ pub const Items = struct {
         }
     };
 
-    fn init(allocator: std.mem.Allocator) Items {
+    fn init(manager: ItemManager) Items {
         return Items{
-            .categories = .init(allocator),
-            .catalog = .init(allocator),
+            .categories = .init(g.cache_arena.allocator()),
+            .name_cache = .init(g.cache_arena.allocator()),
+            .caption_cache = .init(g.cache_arena.allocator()),
+            .manager = manager,
         };
     }
 
-    fn reset(self: *Items, allocator: std.mem.Allocator) void {
-        var details = self.catalog.valueIterator();
-        while (details.next()) |items| {
-            for (items.items) |item| {
-                allocator.free(item.name);
-                allocator.free(item.caption);
-            }
-            items.clearRetainingCapacity();
-        }
-        self.catalog.clearRetainingCapacity();
-    }
-
-    fn deinit(self: *Items, allocator: std.mem.Allocator) void {
-        self.categories.deinit();
-        var details = self.catalog.valueIterator();
-        while (details.next()) |items| {
-            for (items.items) |item| {
-                allocator.free(item.name);
-                allocator.free(item.caption);
-            }
-            items.deinit(allocator);
-        }
-        self.catalog.deinit();
-    }
-
-    pub fn iterator(self: *const Items, category: ItemCategory) Iterator {
-        const items: std.ArrayList(ItemDetails) = self.catalog.get(category) orelse .empty;
-        return .{
-            .items = items.items,
-        };
-    }
-
-    pub fn iteratorAll(self: *const Items) Iterator {
+    pub fn iteratorAll(self: *Items) !IteratorAll {
+        const item_catalog = try g.interop_cache.getField(self.manager, ._ItemCatalog, re.sdk.ManagedObject, .fo(g.sdk));
+        // arena allocated ValueType, reset on deinit
+        const values_collection = try g.interop_cache.callMethod(
+            item_catalog,
+            "get_Values",
+            .{},
+            .{ .type = interop.ValueType },
+            .fo(g.sdk),
+            .{},
+        );
+        const values = try values_collection.call(
+            "toArray()",
+            .{},
+            .{ .type = SystemArray },
+            &g.interop_cache,
+            .fo(g.sdk),
+            .{},
+        );
+        values.managed.addRef(.fo(g.sdk));
+        const len = try values.call(.GetLength, .fo(g.sdk), .{0});
         return .{
             .owner = self,
-            .category_iter = self.categories.keyIterator(),
+            .len = len,
+            .values = values,
         };
     }
 
@@ -148,60 +257,23 @@ pub const Items = struct {
     }
 };
 
-pub const g = struct {
-    pub var allocator: std.mem.Allocator = undefined;
-    pub var io: std.Io = undefined;
-    pub var interop_cache: re.interop.ManagedTypeCache = undefined;
-    pub var api: re.api.Api = undefined;
-    pub var sdk: re.api.VerifiedSdk(verified_sdk_spec) = undefined;
-    pub var tdb: re.sdk.Tdb = undefined;
-
-    pub var items: Items = undefined;
-
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    var threaded: std.Io.Threaded = undefined;
-
-    fn init(init_api: re.Api) !void {
-        api = init_api;
-        g.sdk = try api.verifiedSdk(verified_sdk_spec);
-        g.tdb = re.sdk.getTdb(.fo(g.sdk)) orelse return error.TdbNotFound;
-    }
-
-    fn attach() void {
-        allocator = debug_allocator.allocator();
-        threaded = .init(allocator, .{});
-        io = threaded.io();
-        interop_cache = .init(allocator, io);
-        items = .init(allocator);
-    }
-
-    fn reset() void {
-        items.deinit(allocator);
-
-        interop_cache.deinit();
-        threaded.deinit();
-        _ = debug_allocator.detectLeaks();
-        _ = debug_allocator.deinit();
-    }
-};
-
 fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?interop.MethodMetadata {
     const type_def = tdb.findType(.fo(g.sdk), type_name) orelse return null;
     const metadata = try g.interop_cache.getOrCacheMethodMetadata(.fo(g.sdk), type_def, method_sig);
     return metadata;
 }
 
-fn populateItemInfo() !void {
+fn populateItemCategories() !void {
     g.api.lockLua();
     defer g.api.unlockLua();
 
     const item_category_typedef = g.tdb.findType(.fo(g.sdk), "app.ItemCategory") orelse return error.ItemCategoryTypeNotFound;
     {
         const fields_len = item_category_typedef.getNumFields(.fo(g.sdk));
-        var item_category_fields = try std.ArrayList(re.sdk.Field).initCapacity(g.allocator, fields_len);
-        defer item_category_fields.deinit(g.allocator);
+        var item_category_fields = try std.ArrayList(re.sdk.Field).initCapacity(g.value_arena.allocator(), fields_len);
+        defer item_category_fields.deinit(g.value_arena.allocator());
 
-        const item_category_fields_slice = try item_category_fields.addManyAsSlice(g.allocator, fields_len);
+        const item_category_fields_slice = item_category_fields.addManyAsSliceBounded(fields_len) catch unreachable;
         const fields = try item_category_typedef.getFields(.fo(g.sdk), item_category_fields_slice);
 
         for (fields) |field| {
@@ -222,216 +294,10 @@ fn populateItemInfo() !void {
     }
 
     log.debug("ItemCategories: {}", .{g.items.categories.count()});
-
-    var items_set = std.AutoHashMap(ItemId, void).init(g.allocator);
-    defer items_set.deinit();
-
-    const item_mgr = re.sdk.getManagedSingleton(.fo(g.sdk), "app.ItemManager") orelse return error.ItemManagerNotFound;
-    const item_catalog = try g.interop_cache.getField(item_mgr, ._ItemCatalog, re.sdk.ManagedObject, .fo(g.sdk));
-
-    // ValueType -> app.ConcurrentCatalogDictionary`2.ValueCollection<app.ItemID,app.ItemDetailData>
-    // get_Values() -> ValueType -> toArray() -> SystemArray(ItemDetailData) -> GetValue(int) -> ItemDetailData
-    const values_collection = try g.interop_cache.callMethod(
-        item_catalog,
-        "get_Values",
-        .{},
-        .{ .type = ?interop.ValueType },
-        .fo(g.sdk),
-        .{},
-    );
-
-    if (values_collection) |collection| {
-        defer collection.deinit(g.allocator);
-        log.debug("ItemCatalog ValueCollection: {any}", .{collection.data});
-        if (collection.call(
-            "toArray()",
-            .{},
-            .{ .type = SystemArray },
-            &g.interop_cache,
-            .fo(g.sdk),
-            .{},
-        )) |values| {
-            g.items.reset(g.allocator);
-            const len = try values.call(.GetLength, .fo(g.sdk), .{0});
-            log.debug("ItemCatalog Values: {}", .{len});
-
-            var unknowns: u32 = 0;
-            for (0..@intCast(len)) |i| {
-                const item_detail_mo = (try values.call(.GetValue, .fo(g.sdk), .{i})) orelse
-                    return error.ItemDetailDataNotFound;
-
-                const item_detail = try ItemDetailData.init(&g.interop_cache, .fo(g.sdk), item_detail_mo);
-
-                const id = item_detail.get(._ItemID, .fo(g.sdk)) catch continue;
-                if ((try items_set.getOrPut(id)).found_existing) {
-                    log.info("Duplicate item id found: 0x{x}, skipping", .{@intFromPtr(id.raw)});
-                    continue;
-                }
-
-                const item_catagoery = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
-
-                _ = g.items.categories.get(item_catagoery) orelse {
-                    log.warn("Not known Category: 0x{x}", .{@intFromPtr(item_catagoery.raw)});
-                };
-
-                const name_message_id = item_detail.get(._NameMessageId, .fo(g.sdk)) catch continue;
-                defer name_message_id.deinit(g.allocator);
-                const caption_message_id = item_detail.get(._CaptionMessageId, .fo(g.sdk)) catch continue;
-
-                const name_message = g.interop_cache.callStaticMethod(
-                    "via.gui.message",
-                    "get(System.Guid)",
-                    .{},
-                    .{ .type = interop.SystemStringView },
-                    .fo(g.sdk),
-                    .{name_message_id},
-                ) catch continue;
-                const caption_message = g.interop_cache.callStaticMethod(
-                    "via.gui.message",
-                    "get(System.Guid)",
-                    .{},
-                    .{ .type = interop.SystemStringView },
-                    .fo(g.sdk),
-                    .{caption_message_id},
-                ) catch continue;
-
-                var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.allocator, name_message.data);
-                var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.allocator, caption_message.data);
-
-                if (name_message_utf8.len == 0 and caption_message_utf8.len == 0) {
-                    unknowns += 1;
-                    name_message_utf8 = try std.fmt.allocPrintSentinel(g.allocator, "UnknownName_{}", .{i}, 0);
-                    caption_message_utf8 = try std.fmt.allocPrintSentinel(g.allocator, "UnknownCaption_{}", .{i}, 0);
-                }
-                const slot_capacity_data = item_detail.get(._SlotCapacityData, .fo(g.sdk)) catch continue;
-
-                const items_entry = try g.items.catalog.getOrPut(item_catagoery);
-                if (!items_entry.found_existing) {
-                    items_entry.value_ptr.* = .empty;
-                }
-
-                try items_entry.value_ptr.append(g.allocator, .{
-                    .id = id,
-                    .category = item_catagoery,
-                    .name = name_message_utf8,
-                    .caption = caption_message_utf8,
-                    .base_capacity = slot_capacity_data.get(._BaseCapacity, .fo(g.sdk)) catch continue,
-                    .base_item_box_capacity = slot_capacity_data.get(._BaseItemBoxCapacity, .fo(g.sdk)) catch continue,
-                });
-            }
-
-            log.debug("Collected Unknown Items: {}", .{unknowns});
-            return;
-        } else |_| {}
-    }
-
-    log.warn("Couldn't get the items details from catalog array route.", .{});
-
-    const item_id_typedef = g.tdb.findType(.fo(g.sdk), "app.ItemID") orelse return error.ItemIdTypeNotFound;
-    var item_ids: std.ArrayList(struct { [:0]const u8, ItemId }) = .empty;
-    defer item_ids.deinit(g.allocator);
-    {
-        const fields_len = item_id_typedef.getNumFields(.fo(g.sdk));
-
-        var item_id_fields = try std.ArrayList(re.sdk.Field).initCapacity(g.allocator, fields_len);
-        defer item_id_fields.deinit(g.allocator);
-
-        const item_id_fields_slice = try item_id_fields.addManyAsSlice(g.allocator, fields_len);
-        const fields = try item_id_typedef.getFields(.fo(g.sdk), item_id_fields_slice);
-
-        item_ids = try .initCapacity(g.allocator, fields_len);
-
-        for (fields) |field| {
-            const field_type = field.getType(.fo(g.sdk)) orelse continue;
-            if (!field.isStatic(.fo(g.sdk)) or field_type.raw != item_id_typedef.raw) continue;
-
-            const name = field.getName(.fo(g.sdk)) orelse continue;
-            const data: *?*anyopaque = @ptrCast(@alignCast(field.getDataRaw(.fo(g.sdk), null, false) orelse continue));
-            const field_value = interop.defaultToZigInterop(re.sdk.ManagedObject)(
-                @constCast(&g.sdk),
-                &g.interop_cache,
-                field_type,
-                data,
-            ) catch continue;
-
-            try item_ids.append(g.allocator, .{ name, field_value });
-        }
-    }
-
-    g.items.reset(g.allocator);
-
-    var unknowns: u32 = 0;
-    for (item_ids.items, 0..) |item_id, i| {
-        const item_detail = g.interop_cache.callMethod(
-            item_catalog,
-            "getValue",
-            .{},
-            .{ .type = ItemDetailData },
-            .fo(g.sdk),
-            .{ item_id.@"1", null },
-        ) catch continue;
-
-        const id = item_detail.get(._ItemID, .fo(g.sdk)) catch continue;
-        if ((try items_set.getOrPut(id)).found_existing) {
-            log.info("Duplicate item id found: 0x{x}, skipping", .{@intFromPtr(id.raw)});
-            continue;
-        }
-
-        const item_catagoery = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
-
-        _ = g.items.categories.get(item_catagoery) orelse {
-            log.warn("Not known Category: 0x{x}", .{@intFromPtr(item_catagoery.raw)});
-        };
-
-        const name_message_id = item_detail.get(._NameMessageId, .fo(g.sdk)) catch continue;
-        defer name_message_id.deinit(g.allocator);
-        const caption_message_id = item_detail.get(._CaptionMessageId, .fo(g.sdk)) catch continue;
-
-        const name_message = g.interop_cache.callStaticMethod(
-            "via.gui.message",
-            "get(System.Guid)",
-            .{},
-            .{ .type = interop.SystemStringView },
-            .fo(g.sdk),
-            .{name_message_id},
-        ) catch continue;
-        const caption_message = g.interop_cache.callStaticMethod(
-            "via.gui.message",
-            "get(System.Guid)",
-            .{},
-            .{ .type = interop.SystemStringView },
-            .fo(g.sdk),
-            .{caption_message_id},
-        ) catch continue;
-
-        var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.allocator, name_message.data);
-        var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.allocator, caption_message.data);
-
-        if (name_message_utf8.len == 0 and caption_message_utf8.len == 0) {
-            unknowns += 1;
-            name_message_utf8 = try std.fmt.allocPrintSentinel(g.allocator, "UnknownName_{}", .{i}, 0);
-            caption_message_utf8 = try std.fmt.allocPrintSentinel(g.allocator, "UnknownCaption_{}", .{i}, 0);
-        }
-        const slot_capacity_data = item_detail.get(._SlotCapacityData, .fo(g.sdk)) catch continue;
-
-        const items_entry = try g.items.catalog.getOrPut(item_catagoery);
-        if (!items_entry.found_existing) {
-            items_entry.value_ptr.* = .empty;
-        }
-
-        try items_entry.value_ptr.append(g.allocator, .{
-            .id = id,
-            .category = item_catagoery,
-            .name = name_message_utf8,
-            .caption = caption_message_utf8,
-            .base_capacity = slot_capacity_data.get(._BaseCapacity, .fo(g.sdk)) catch continue,
-            .base_item_box_capacity = slot_capacity_data.get(._BaseItemBoxCapacity, .fo(g.sdk)) catch continue,
-        });
-    }
 }
 
 fn onStart() !void {
-    try populateItemInfo();
+    try populateItemCategories();
 }
 
 fn onPlayerItemChange() !void {}

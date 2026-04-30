@@ -33,6 +33,8 @@ pub const SystemArray = interop.ManagedObject("System.Array", .{
     },
 }, .{});
 
+pub const SystemGuid = interop.ValueType;
+
 pub const ItemCategory = re.sdk.ManagedObject;
 pub const ItemId = re.sdk.ManagedObject;
 
@@ -48,10 +50,10 @@ pub const InventorySlotCapacitySetting = interop.ManagedObject("app.InventorySlo
 });
 
 pub const ItemDetailData = interop.ManagedObject("app.ItemDetailData", .{}, .{
-    ._ItemID = .{ .type = re.sdk.ManagedObject },
-    ._ItemCategory = .{ .type = re.sdk.ManagedObject },
-    ._NameMessageId = .{ .type = interop.ValueType },
-    ._CaptionMessageId = .{ .type = interop.ValueType },
+    ._ItemID = .{ .type = ItemId },
+    ._ItemCategory = .{ .type = ItemCategory },
+    ._NameMessageId = .{ .type = SystemGuid },
+    ._CaptionMessageId = .{ .type = SystemGuid },
     // app.InventoryPanelShapeSetting
     ._PanelShapeData = .{ .type = re.sdk.ManagedObject },
     // app.InventorySlotCapacitySetting

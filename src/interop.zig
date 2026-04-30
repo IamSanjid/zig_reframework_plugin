@@ -98,7 +98,8 @@ const TypeDefContext = struct {
 
 // Every check is at runtime, don't know any better way of doing it...
 pub const ManagedTypeCache = struct {
-    allocator: std.mem.Allocator,
+    cache_arena: std.mem.Allocator,
+    value_arena: std.mem.Allocator,
     io: std.Io,
     type_def_map: std.HashMap(
         api.sdk.TypeDefinition,
@@ -107,18 +108,26 @@ pub const ManagedTypeCache = struct {
         std.hash_map.default_max_load_percentage,
     ),
     managed_metadata: std.StringHashMap(ManagedObjectMetadata),
+    /// Should be read before resetting `value_arena`.
     diagnostics: std.ArrayList(u8),
     mutex: std.Io.Mutex = .init,
 
     const Self = @This();
 
-    /// `allocator` needs to be thread safe!
-    pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
+    /// `cache_arena`: Used for caching type definitions, method and field metadata.
+    /// It's expected to be reset rarely.
+    ///
+    /// `value_arena`: Used for temporary allocations when building method arguments or reading field values.
+    /// It's expected to be reset often, ideally every frame, to avoid fragmentation and reduce memory usage.
+    ///
+    /// `io`: Used for locking when accessing the cache.
+    pub fn init(cache_arena: std.mem.Allocator, value_arena: std.mem.Allocator, io: std.Io) Self {
         return .{
-            .allocator = allocator,
+            .cache_arena = cache_arena,
+            .value_arena = value_arena,
             .io = io,
-            .type_def_map = .init(allocator),
-            .managed_metadata = .init(allocator),
+            .type_def_map = .init(cache_arena),
+            .managed_metadata = .init(cache_arena),
             .diagnostics = .empty,
         };
     }
@@ -129,7 +138,7 @@ pub const ManagedTypeCache = struct {
             while (values_iter.next()) |metadata| {
                 var methods = metadata.methods.valueIterator();
                 while (methods.next()) |method| {
-                    method.deinit(self.allocator);
+                    method.deinit(self.cache_arena);
                 }
 
                 metadata.methods.deinit();
@@ -139,14 +148,14 @@ pub const ManagedTypeCache = struct {
         {
             var values_iter = self.managed_metadata.valueIterator();
             while (values_iter.next()) |metadata| {
-                self.allocator.free(metadata.methods);
-                self.allocator.free(metadata.fields);
+                self.cache_arena.free(metadata.methods);
+                self.cache_arena.free(metadata.fields);
             }
         }
 
         self.type_def_map.deinit();
         self.managed_metadata.deinit();
-        self.diagnostics.deinit(self.allocator);
+        self.diagnostics.deinit(self.value_arena);
         self.* = undefined;
     }
 
@@ -154,7 +163,7 @@ pub const ManagedTypeCache = struct {
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
 
-        return self.diagnostics.toOwnedSliceSentinel(self.allocator, 0);
+        return self.diagnostics.toOwnedSliceSentinel(self.value_arena, 0);
     }
 
     pub fn lock(self: *Self) !void {
@@ -178,7 +187,7 @@ pub const ManagedTypeCache = struct {
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
 
-        const type_def_entry = try self.type_def_map.getOrPutValue(type_def, .init(self.allocator));
+        const type_def_entry = try self.type_def_map.getOrPutValue(type_def, .init(self.cache_arena));
 
         const method_sig = sig;
 
@@ -191,7 +200,7 @@ pub const ManagedTypeCache = struct {
             const handle = type_def.findMethod(.fromOther(sdk), method_sig) orelse {
                 return error.MethodNotFound;
             };
-            const new_method_metadata = try MethodMetadata.init(self.allocator, .fo(sdk), handle);
+            const new_method_metadata = try MethodMetadata.init(self.cache_arena, .fo(sdk), handle);
             method_cache_entry.value_ptr.* = new_method_metadata;
             break :blk new_method_metadata;
         };
@@ -304,7 +313,7 @@ pub const ManagedTypeCache = struct {
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
 
-        const type_def_entry = try self.type_def_map.getOrPutValue(type_def, .init(self.allocator));
+        const type_def_entry = try self.type_def_map.getOrPutValue(type_def, .init(self.cache_arena));
 
         const field_name = comptime field.name;
 
@@ -563,12 +572,12 @@ pub const ManagedTypeCache = struct {
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
 
-        try self.diagnostics.print(self.allocator, fmt ++ "\n", args);
+        try self.diagnostics.print(self.value_arena, fmt ++ "\n", args);
     }
 
     fn appendError(self: *Self, err: []const u8) !void {
-        try self.diagnostics.appendSlice(self.allocator, err);
-        try self.diagnostics.append(self.allocator, '\n');
+        try self.diagnostics.appendSlice(self.value_arena, err);
+        try self.diagnostics.append(self.value_arena, '\n');
     }
 
     fn validationDone(self: *Self, type_name: []const u8, metadata: ManagedObjectMetadata) !void {
@@ -993,7 +1002,7 @@ pub fn defaultToZigInterop(RetType: type) fn (?*anyopaque, *ManagedTypeCache, ap
                             return error.ExpectedValueType;
                         }
                     }
-                    return try ValueType.init(cache.allocator, sdk, data, from_type_def);
+                    return try ValueType.init(cache.value_arena, sdk, data, from_type_def);
                 },
                 else => {},
             }
@@ -1676,18 +1685,18 @@ pub fn ManagedObject(
 
         fn checkedRuntime(cache: *ManagedTypeCache, sdk: ManagedSdk, type_def: api.sdk.TypeDefinition) !ManagedObjectType {
             const method_names = comptime std.meta.fieldNames(@TypeOf(methods));
-            var collected_methods = try std.ArrayList(MethodMetadata).initCapacity(cache.allocator, method_names.len);
-            defer collected_methods.deinit(cache.allocator);
+            var collected_methods = try std.ArrayList(MethodMetadata).initCapacity(cache.cache_arena, method_names.len);
+            defer collected_methods.deinit(cache.cache_arena);
 
             const field_names = comptime std.meta.fieldNames(@TypeOf(fields));
-            var collected_fields = try std.ArrayList(FieldMetadata).initCapacity(cache.allocator, field_names.len);
-            defer collected_fields.deinit(cache.allocator);
+            var collected_fields = try std.ArrayList(FieldMetadata).initCapacity(cache.cache_arena, field_names.len);
+            defer collected_fields.deinit(cache.cache_arena);
             {
                 try cache.lock();
                 defer cache.unlock();
 
                 // getting existing cached type_def metadata...
-                const type_def_entry = try cache.type_def_map.getOrPutValue(type_def, .init(cache.allocator));
+                const type_def_entry = try cache.type_def_map.getOrPutValue(type_def, .init(cache.cache_arena));
 
                 // Checking methods
                 inline for (method_names) |default_method_name| {
@@ -1702,7 +1711,7 @@ pub fn ManagedObject(
                     const method_cache_entry = try type_def_entry.value_ptr.methods.getOrPut(method_sig);
                     if (method_cache_entry.found_existing) {
                         try collected_methods.append(
-                            cache.allocator,
+                            cache.cache_arena,
                             method_cache_entry.value_ptr.*,
                         );
                     } else {
@@ -1718,10 +1727,10 @@ pub fn ManagedObject(
                         // Disclaimer: Deiniting one of them is enough to free all
                         // the resources associated with it, make sure to call deinit
                         // once during one of the map/list owner free.
-                        const new_method_metadata = try MethodMetadata.init(cache.allocator, .fo(sdk), method);
+                        const new_method_metadata = try MethodMetadata.init(cache.cache_arena, .fo(sdk), method);
                         method_cache_entry.value_ptr.* = new_method_metadata;
                         try collected_methods.append(
-                            cache.allocator,
+                            cache.cache_arena,
                             new_method_metadata,
                         );
                     }
@@ -1733,7 +1742,7 @@ pub fn ManagedObject(
                     const field_cache_entry = try type_def_entry.value_ptr.fields.getOrPut(field_name);
 
                     if (field_cache_entry.found_existing) {
-                        try collected_fields.append(cache.allocator, field_cache_entry.value_ptr.*);
+                        try collected_fields.append(cache.cache_arena, field_cache_entry.value_ptr.*);
                     } else {
                         errdefer type_def_entry.value_ptr.fields.removeByPtr(field_cache_entry.key_ptr);
 
@@ -1750,15 +1759,15 @@ pub fn ManagedObject(
                             .type_def = field_type_def,
                         };
                         field_cache_entry.value_ptr.* = new_field_metadata;
-                        try collected_fields.append(cache.allocator, new_field_metadata);
+                        try collected_fields.append(cache.cache_arena, new_field_metadata);
                     }
                 }
             }
 
             const metadata = ManagedObjectMetadata{
                 .type_def = type_def,
-                .methods = try collected_methods.toOwnedSlice(cache.allocator),
-                .fields = try collected_fields.toOwnedSlice(cache.allocator),
+                .methods = try collected_methods.toOwnedSlice(cache.cache_arena),
+                .fields = try collected_fields.toOwnedSlice(cache.cache_arena),
             };
             try cache.validationDone(full_type_name, metadata);
             return .{
