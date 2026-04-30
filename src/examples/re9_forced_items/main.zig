@@ -96,8 +96,7 @@ pub const g = struct {
 
 pub const Items = struct {
     categories: std.AutoHashMap(ItemCategory, [:0]const u8),
-    name_cache: std.AutoHashMap(ItemId, [:0]const u8),
-    caption_cache: std.AutoHashMap(ItemId, [:0]const u8),
+    items_cache: std.AutoHashMap(ItemId, ItemDetails),
     manager: ItemManager,
 
     pub const IteratorAll = struct {
@@ -116,77 +115,57 @@ pub const Items = struct {
                     return error.ItemDetailDataNotFound;
 
                 const item_detail = ItemDetailData.init(&g.interop_cache, .fo(g.sdk), item_detail_mo) catch continue;
-                const item_category = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
-
                 const id = item_detail.get(._ItemID, .fo(g.sdk)) catch continue;
 
-                const name = blk: {
-                    const name_entry = try self.owner.name_cache.getOrPut(id);
-                    if (name_entry.found_existing) {
-                        break :blk name_entry.value_ptr.*;
-                    } else {
-                        // arena allocated ValueType, reset on deinit
-                        const name_message_id = item_detail.get(._NameMessageId, .fo(g.sdk)) catch continue;
+                const item_entry = self.owner.items_cache.getOrPut(id) catch continue;
+                if (item_entry.found_existing) {
+                    return item_entry.value_ptr.*;
+                } else {
+                    const item_category = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
 
-                        const name_message = g.interop_cache.callStaticMethod(
-                            "via.gui.message",
-                            "get(System.Guid)",
-                            .{},
-                            .{ .type = interop.SystemStringView },
-                            .fo(g.sdk),
-                            .{name_message_id},
-                        ) catch continue;
+                    // arena allocated ValueType, reset on deinit
+                    const name_message_id = item_detail.get(._NameMessageId, .fo(g.sdk)) catch continue;
+                    const caption_message_id = item_detail.get(._CaptionMessageId, .fo(g.sdk)) catch continue;
 
-                        var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.cache_arena.allocator(), name_message.data);
+                    const name_message = g.interop_cache.callStaticMethod(
+                        "via.gui.message",
+                        "get(System.Guid)",
+                        .{},
+                        .{ .type = interop.SystemStringView },
+                        .fo(g.sdk),
+                        .{name_message_id},
+                    ) catch continue;
 
-                        if (name_message_utf8.len == 0) {
-                            name_message_utf8 = try std.fmt.allocPrintSentinel(g.cache_arena.allocator(), "UnknownName_{}", .{self.next_idx}, 0);
-                        }
+                    const caption_message = g.interop_cache.callStaticMethod(
+                        "via.gui.message",
+                        "get(System.Guid)",
+                        .{},
+                        .{ .type = interop.SystemStringView },
+                        .fo(g.sdk),
+                        .{caption_message_id},
+                    ) catch continue;
 
-                        name_entry.value_ptr.* = name_message_utf8;
+                    var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.cache_arena.allocator(), name_message.data);
+                    var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.cache_arena.allocator(), caption_message.data);
 
-                        break :blk name_message_utf8;
+                    if (name_message_utf8.len == 0 and caption_message_utf8.len == 0) {
+                        name_message_utf8 = try std.fmt.allocPrintSentinel(g.cache_arena.allocator(), "UnknownName_{}", .{self.next_idx}, 0);
+                        caption_message_utf8 = try std.fmt.allocPrintSentinel(g.cache_arena.allocator(), "UnknownCaption_{}", .{self.next_idx}, 0);
                     }
-                };
 
-                const caption = blk: {
-                    const caption_entry = try self.owner.caption_cache.getOrPut(id);
-                    if (caption_entry.found_existing) {
-                        break :blk caption_entry.value_ptr.*;
-                    } else {
-                        // arena allocated ValueType, reset on deinit
-                        const caption_message_id = item_detail.get(._CaptionMessageId, .fo(g.sdk)) catch continue;
+                    const slot_capacity_data = item_detail.get(._SlotCapacityData, .fo(g.sdk)) catch continue;
 
-                        const caption_message = g.interop_cache.callStaticMethod(
-                            "via.gui.message",
-                            "get(System.Guid)",
-                            .{},
-                            .{ .type = interop.SystemStringView },
-                            .fo(g.sdk),
-                            .{caption_message_id},
-                        ) catch continue;
-
-                        var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.cache_arena.allocator(), caption_message.data);
-
-                        if (caption_message_utf8.len == 0) {
-                            caption_message_utf8 = try std.fmt.allocPrintSentinel(g.cache_arena.allocator(), "UnknownCaption_{}", .{self.next_idx}, 0);
-                        }
-
-                        caption_entry.value_ptr.* = caption_message_utf8;
-
-                        break :blk caption_message_utf8;
-                    }
-                };
-
-                const slot_capacity_data = item_detail.get(._SlotCapacityData, .fo(g.sdk)) catch continue;
-                return ItemDetails{
-                    .id = id,
-                    .category = item_category,
-                    .name = name,
-                    .caption = caption,
-                    .base_capacity = slot_capacity_data.get(._BaseCapacity, .fo(g.sdk)) catch continue,
-                    .base_item_box_capacity = slot_capacity_data.get(._BaseItemBoxCapacity, .fo(g.sdk)) catch continue,
-                };
+                    const details: ItemDetails = .{
+                        .id = id,
+                        .category = item_category,
+                        .name = name_message_utf8,
+                        .caption = caption_message_utf8,
+                        .base_capacity = slot_capacity_data.get(._BaseCapacity, .fo(g.sdk)) catch continue,
+                        .base_item_box_capacity = slot_capacity_data.get(._BaseItemBoxCapacity, .fo(g.sdk)) catch continue,
+                    };
+                    item_entry.value_ptr.* = details;
+                    return details;
+                }
             }
 
             return null;
@@ -216,8 +195,7 @@ pub const Items = struct {
     fn init(manager: ItemManager) Items {
         return Items{
             .categories = .init(g.cache_arena.allocator()),
-            .name_cache = .init(g.cache_arena.allocator()),
-            .caption_cache = .init(g.cache_arena.allocator()),
+            .items_cache = .init(g.cache_arena.allocator()),
             .manager = manager,
         };
     }
