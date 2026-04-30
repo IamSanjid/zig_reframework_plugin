@@ -23,6 +23,9 @@ pub const options: Options = if (@hasDecl(root, "ref_options") and @TypeOf(root.
 
 pub const Options = struct {
     // Keep updated with https://github.com/praydog/REFramework/blob/c4b1314820d20255febf7834903e8cedb669b49c/shared/sdk/REManagedObject.cpp#L14
+    /// RE7 Needs this to be 0x20, how to override? In `main.zig` define:
+    ///
+    /// `pub const ref_options: reframework.Options = .{ .managed_object_runtime_size = 0x20 };`
     managed_object_runtime_size: usize = 0x10,
 };
 

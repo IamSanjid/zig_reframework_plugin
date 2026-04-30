@@ -435,8 +435,7 @@ pub fn DllMain(
             g_state.allocator = debug_allocator.allocator();
             threaded = .init(g_state.allocator, .{});
             g_state.io = threaded.io();
-            // We don't need to utilize multiple arena allocators in this example...
-            g_state.interop_cache = .init(g_state.allocator, g_state.allocator, g_state.io);
+            g_state.interop_cache = .init(g_state.allocator, g_state.io);
         },
         win32.system.system_services.DLL_PROCESS_DETACH => {},
         else => {},

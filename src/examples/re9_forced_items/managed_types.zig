@@ -27,10 +27,10 @@ pub const GenericDictionary = extern struct {
 };
 
 comptime {
-    std.debug.assert(@offsetOf(GenericDictionary, "_bucket") == re.sdk.ManagedObject.runtime_size + 0x00);
-    std.debug.assert(@offsetOf(GenericDictionary, "_entries") == re.sdk.ManagedObject.runtime_size + 0x08);
-    std.debug.assert(@offsetOf(GenericDictionary, "_version") == re.sdk.ManagedObject.runtime_size + 0x28);
-    std.debug.assert(@offsetOf(GenericDictionary, "_count") == re.sdk.ManagedObject.runtime_size + 0x2c);
+    std.debug.assert(@offsetOf(GenericDictionary, "_bucket") == 0x10);
+    std.debug.assert(@offsetOf(GenericDictionary, "_entries") == 0x18);
+    std.debug.assert(@offsetOf(GenericDictionary, "_version") == 0x38);
+    std.debug.assert(@offsetOf(GenericDictionary, "_count") == 0x3c);
 }
 
 pub const ConcurrentCatalogDictionary = extern struct {
@@ -39,7 +39,7 @@ pub const ConcurrentCatalogDictionary = extern struct {
 };
 
 comptime {
-    std.debug.assert(@offsetOf(ConcurrentCatalogDictionary, "_Dict") == re.sdk.ManagedObject.runtime_size + 0x0);
+    std.debug.assert(@offsetOf(ConcurrentCatalogDictionary, "_Dict") == 0x10);
 }
 
 pub const ItemManager = extern struct {
@@ -49,33 +49,31 @@ pub const ItemManager = extern struct {
 };
 
 comptime {
-    std.debug.assert(@offsetOf(ItemManager, "_ItemCatalog") == re.sdk.ManagedObject.runtime_size + 0xe0);
+    std.debug.assert(@offsetOf(ItemManager, "_ItemCatalog") == 0xf0);
 }
 
-pub fn SystemArray(comptime T: type) type {
-    return interop.ManagedObject("System.Array", .{
-        .GetLength = .{
-            .params = .{
-                .{ .type_name = "System.Int32", .type = i32 },
-            },
-            .ret = .{ .type = i32 },
+pub const SystemArray = interop.ManagedObject("System.Array", .{
+    .GetLength = .{
+        .params = .{
+            .{ .type_name = "System.Int32", .type = i32 },
         },
-        .GetValue = .{
-            .params = .{
-                .{ .type_name = "System.Int32", .type = i32 },
-            },
-            .ret = .{ .type = ?T },
+        .ret = .{ .type = i32 },
+    },
+    .GetValue = .{
+        .params = .{
+            .{ .type_name = "System.Int32", .type = i32 },
         },
-        .SetValue = .{
-            .params = .{
-                // The signature becomes only the method name, no param type is included.
-                .{ .type_name = null, .type = T },
-                .{ .type_name = "System.Int32", .type = i32 },
-            },
-            .ret = .{ .type = void },
+        .ret = .{ .type = ?re.sdk.ManagedObject },
+    },
+    .SetValue = .{
+        .params = .{
+            // The signature becomes only the method name, no param type is included.
+            .{ .type_name = null, .type = re.sdk.ManagedObject },
+            .{ .type_name = "System.Int32", .type = i32 },
         },
-    }, .{});
-}
+        .ret = .{ .type = void },
+    },
+}, .{});
 
 pub const SystemGuid = interop.ValueType;
 
@@ -127,6 +125,7 @@ pub const Inventory = interop.ManagedObject("app.Inventory", .{
     },
 }, .{
     ._Moneys = .{ .type = i32 },
+    ._PanelItems = .{ .type = *GenericDictionary },
 });
 
 pub const InventoryManager = interop.ManagedObject("app.InventoryManager", .{
@@ -150,5 +149,11 @@ pub const CharacterManager = interop.ManagedObject("app.CharacterManager", .{
     .getPlayerContextRef = .{
         .params = .{},
         .ret = .{ .type = ?PlayerContext },
+    },
+    .notifyPlayerInitialized = .{
+        .params = .{},
+    },
+    .updateInveontoryForPlayer = .{
+        .params = .{},
     },
 }, .{});

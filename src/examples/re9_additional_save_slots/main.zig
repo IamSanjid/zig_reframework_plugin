@@ -230,7 +230,7 @@ fn getDefaultSegmentItemSet(save_mgr: re.api.sdk.ManagedObject) !?re.api.sdk.Man
         .{SaveSlotSegmentType.default_0},
     );
     if (value_coll) |v| {
-        defer v.deinit(g_state.allocator);
+        // ValueType is handled by cache value arena.
         if (v.get(
             ._Source,
             ?re.api.sdk.ManagedObject,
@@ -392,8 +392,7 @@ pub fn DllMain(
             g_state.allocator = debug_allocator.allocator();
             threaded = .init(g_state.allocator, .{});
             g_state.io = threaded.io();
-            // We don't need to utilize multiple arena allocators in this example...
-            g_state.interop_cache = .init(g_state.allocator, g_state.allocator, g_state.io);
+            g_state.interop_cache = .init(g_state.allocator, g_state.io);
         },
         DLL_PROCESS_DETACH => {
             threaded.deinit();

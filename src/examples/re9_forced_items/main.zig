@@ -17,6 +17,11 @@ const ItemDetails = managed_types.ItemDetails;
 const ItemDetailData = managed_types.ItemDetailData;
 const ItemCategory = managed_types.ItemCategory;
 const ItemId = managed_types.ItemId;
+const CharacterManager = managed_types.CharacterManager;
+const PlayerContext = managed_types.PlayerContext;
+const InventoryManager = managed_types.InventoryManager;
+const Inventory = managed_types.Inventory;
+const InventoryType = managed_types.InventoryType;
 
 const GenericDictionary = managed_types.GenericDictionary;
 const ConcurrentCatalogDictionary = managed_types.ConcurrentCatalogDictionary;
@@ -62,12 +67,12 @@ pub const g = struct {
     pub var tdb: re.sdk.Tdb = undefined;
 
     pub var items: Items = undefined;
+    pub var level: Level = undefined;
 
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     var threaded: std.Io.Threaded = undefined;
 
-    pub var value_arena: std.heap.ArenaAllocator = .init(debug_allocator.allocator());
-    pub var cache_arena: std.heap.ArenaAllocator = .init(debug_allocator.allocator());
+    pub var arena: std.heap.ArenaAllocator = .init(debug_allocator.allocator());
 
     fn init(init_api: re.Api) !void {
         api = init_api;
@@ -82,14 +87,13 @@ pub const g = struct {
         threaded = .init(debug_allocator.allocator(), .{});
         allocator = debug_allocator.allocator();
         io = threaded.io();
-        interop_cache = .init(cache_arena.allocator(), value_arena.allocator(), io);
+        interop_cache = .init(debug_allocator.allocator(), io);
     }
 
     fn reset() void {
         interop_cache.deinit();
 
-        _ = value_arena.reset(.free_all);
-        _ = cache_arena.reset(.free_all);
+        _ = arena.reset(.free_all);
 
         threaded.deinit();
         _ = debug_allocator.detectLeaks();
@@ -166,12 +170,12 @@ pub const Items = struct {
                         .{caption_message_id},
                     ) catch continue;
 
-                    var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.cache_arena.allocator(), name_message.data);
-                    var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.cache_arena.allocator(), caption_message.data);
+                    var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.arena.allocator(), name_message.data);
+                    var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.arena.allocator(), caption_message.data);
 
                     if (name_message_utf8.len == 0 and caption_message_utf8.len == 0) {
-                        name_message_utf8 = try std.fmt.allocPrintSentinel(g.cache_arena.allocator(), "UnknownName_{}", .{self.next_idx}, 0);
-                        caption_message_utf8 = try std.fmt.allocPrintSentinel(g.cache_arena.allocator(), "UnknownCaption_{}", .{self.next_idx}, 0);
+                        name_message_utf8 = try std.fmt.allocPrintSentinel(g.arena.allocator(), "UnknownName_{}", .{self.next_idx}, 0);
+                        caption_message_utf8 = try std.fmt.allocPrintSentinel(g.arena.allocator(), "UnknownCaption_{}", .{self.next_idx}, 0);
                     }
 
                     const slot_capacity_data = item_detail.get(._SlotCapacityData, .fo(g.sdk)) catch continue;
@@ -194,7 +198,7 @@ pub const Items = struct {
 
         pub fn deinit(self: IteratorAll) void {
             _ = self;
-            _ = g.value_arena.reset(.retain_capacity);
+            _ = g.interop_cache.value_arena.reset(.retain_capacity);
         }
     };
 
@@ -215,8 +219,8 @@ pub const Items = struct {
 
     fn init(manager: *ItemManager) Items {
         return Items{
-            .categories = .init(g.cache_arena.allocator()),
-            .items_cache = .init(g.cache_arena.allocator()),
+            .categories = .init(g.arena.allocator()),
+            .items_cache = .init(g.arena.allocator()),
             .manager = manager,
         };
     }
@@ -232,8 +236,8 @@ pub const Items = struct {
             @branchHint(.cold);
             var iter = self.items_cache.valueIterator();
             while (iter.next()) |v| {
-                g.cache_arena.allocator().free(v.name);
-                g.cache_arena.allocator().free(v.caption);
+                g.arena.allocator().free(v.name);
+                g.arena.allocator().free(v.caption);
             }
             self.items_cache.clearRetainingCapacity();
             self.last_version = version;
@@ -259,7 +263,48 @@ pub const Items = struct {
     }
 };
 
-fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?interop.MethodMetadata {
+pub const Level = struct {
+    character_manager: CharacterManager,
+    inventory_manager: InventoryManager,
+    player_context: PlayerContext,
+
+    fn init() !Level {
+        const character_manager = try CharacterManager.init(
+            &g.interop_cache,
+            .fo(g.sdk),
+            re.sdk.getManagedSingleton(.fo(g.sdk), CharacterManager.fullTypeName()) orelse
+                return error.CharacterManagerNotFound,
+        );
+
+        const inventory_manager = try InventoryManager.init(
+            &g.interop_cache,
+            .fo(g.sdk),
+            re.sdk.getManagedSingleton(.fo(g.sdk), InventoryManager.fullTypeName()) orelse
+                return error.InventoryManagerNotFound,
+        );
+
+        const player_context = (try character_manager.call(.getPlayerContextRef, .fo(g.sdk), .{})) orelse
+            return error.PlayerContextNotFound;
+
+        return .{
+            .character_manager = character_manager,
+            .inventory_manager = inventory_manager,
+            .player_context = player_context,
+        };
+    }
+
+    fn checkInventory(self: *Level) !void {
+        const inventory_user = try self.player_context.call(.get_InventoryUserID, .fo(g.sdk), .{});
+        const inventory = (try self.inventory_manager.call(
+            .getInventory,
+            .fo(g.sdk),
+            .{ inventory_user, InventoryType.hand },
+        )) orelse return error.InventoryNotFound;
+        log.debug("Inventory: 0x{x}", .{@intFromPtr(inventory.managed.raw)});
+    }
+};
+
+fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?*interop.MethodMetadata {
     const type_def = tdb.findType(.fo(g.sdk), type_name) orelse return null;
     const metadata = try g.interop_cache.getOrCacheMethodMetadata(.fo(g.sdk), type_def, method_sig);
     return metadata;
@@ -272,8 +317,8 @@ fn populateItemCategories() !void {
     const item_category_typedef = g.tdb.findType(.fo(g.sdk), "app.ItemCategory") orelse return error.ItemCategoryTypeNotFound;
     {
         const fields_len = item_category_typedef.getNumFields(.fo(g.sdk));
-        var item_category_fields = try std.ArrayList(re.sdk.Field).initCapacity(g.value_arena.allocator(), fields_len);
-        defer item_category_fields.deinit(g.value_arena.allocator());
+        var item_category_fields = try std.ArrayList(re.sdk.Field).initCapacity(g.arena.allocator(), fields_len);
+        defer item_category_fields.deinit(g.arena.allocator());
 
         const item_category_fields_slice = item_category_fields.addManyAsSliceBounded(fields_len) catch unreachable;
         const fields = try item_category_typedef.getFields(.fo(g.sdk), item_category_fields_slice);
@@ -300,6 +345,11 @@ fn populateItemCategories() !void {
 
 fn onStart() !void {
     try populateItemCategories();
+}
+
+fn onPlayerInitialized() !void {
+    g.level = try .init();
+    try g.level.checkInventory();
 }
 
 fn onPlayerItemChange() !void {}
@@ -350,9 +400,25 @@ fn installHooks() !void {
         false,
     );
 
+    const CharacterManagerT = try CharacterManager.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
+    _ = CharacterManagerT.getMethod(.notifyPlayerInitialized).addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                onPlayerInitialized() catch |e| {
+                    log.err("Error onPlayerInitialized: {}", .{e});
+                };
+            }
+        }.func,
+        false,
+    );
+
     // app.GuiManagerBehavior
     // onItemAcquired(app.ItemAcquiredInfo)
     // onItemStockChanged(app.InventoryStockEventArgs)
+    // app.TutorialObserver
+    // onUsedEvent(app.InventoryCommandEventArgs)
 
     // app.PlayerContext
     // get_InventoryUserID()

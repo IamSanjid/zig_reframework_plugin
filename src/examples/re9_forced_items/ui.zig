@@ -1,4 +1,5 @@
 const std = @import("std");
+const root = @import("root");
 
 const re = @import("reframework");
 
@@ -7,11 +8,11 @@ const cimgui_dll = @import("cimgui_dll.zig");
 
 const managed_types = @import("managed_types.zig");
 
-const g = @import("root").g;
+const g = root.g;
 
 const log = std.log.scoped(.re9_forced_items_ui);
 
-const color_active = 0xFFF4853D;
+const color_active = 0xfff4853d;
 
 const u = struct {
     var current_category: ?managed_types.ItemCategory = null;
