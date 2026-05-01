@@ -107,15 +107,18 @@ fn init(api: re.Api) !void {
             fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
                 if (!initialized) return;
 
+                var new_scope = g_state.interop_cache.newScope(g_state.allocator);
+                defer new_scope.deinit();
+
                 const unit = pending_unit orelse return;
 
                 defer pending_unit = null;
 
                 const res = blk: {
-                    const current = unit.get(._SaveItemNum, .fo(g_state.sdk)) catch |e| break :blk e;
+                    const current = unit.get(._SaveItemNum, &new_scope, .fo(g_state.sdk)) catch |e| break :blk e;
                     const max_save_games_with_auto = max_save_games + auto_save_slots;
                     if (current < max_save_games_with_auto) {
-                        unit.set(._SaveItemNum, .fo(g_state.sdk), max_save_games_with_auto) catch |e| break :blk e;
+                        unit.set(._SaveItemNum, &new_scope, .fo(g_state.sdk), max_save_games_with_auto) catch |e| break :blk e;
                         log.info("Patched GUI _SaveItemNum: {} -> {}", .{ current, max_save_games_with_auto });
                     }
                     break :blk {};
@@ -143,6 +146,9 @@ fn init(api: re.Api) !void {
                 if (!initialized) return;
                 const retval_ptr = retval_opt orelse return;
 
+                var scope = g_state.interop_cache.newScope(g_state.allocator);
+                defer scope.deinit();
+
                 const GuiSaveDataInfoT = GuiSaveDataInfo.Runtime.get(&g_state.interop_cache, .fo(g_state.sdk)) catch return;
                 const GuiSaveLoadModelT = GuiSaveLoadModel.Runtime.get(&g_state.interop_cache, .fo(g_state.sdk)) catch return;
 
@@ -151,7 +157,7 @@ fn init(api: re.Api) !void {
                     .fo(g_state.sdk),
                     .{ .raw = @ptrCast(@alignCast(retval_ptr.*)) },
                 ) catch return;
-                var len = arr.call(.GetLength, .fo(g_state.sdk), .{0}) catch return;
+                var len = arr.call(.GetLength, &scope, .fo(g_state.sdk), .{0}) catch return;
 
                 const max_save_games_with_auto: usize = @intCast(max_save_games + auto_save_slots);
 
@@ -176,27 +182,29 @@ fn init(api: re.Api) !void {
                     for (0..@intCast(auto_save_slots)) |i| {
                         const new_save_info = (GuiSaveLoadModelT.callStatic(
                             .makeSaveData,
+                            &scope,
                             .fo(g_state.sdk),
                             .{ SaveSlotCategory.auto, i },
                         ) catch continue) orelse continue;
-                        new_arr.call(.SetValue, .fo(g_state.sdk), .{ new_save_info, i }) catch continue;
+                        new_arr.call(.SetValue, &scope, .fo(g_state.sdk), .{ new_save_info, i }) catch continue;
                         new_save_info.managed.addRef(.fo(g_state.sdk));
                     }
                     len += auto_save_slots;
                 } else {
                     for (0..@intCast(len)) |i| {
-                        const item = (arr.call(.GetValue, .fo(g_state.sdk), .{i}) catch continue) orelse continue;
-                        new_arr.call(.SetValue, .fo(g_state.sdk), .{ item, i }) catch continue;
+                        const item = (arr.call(.GetValue, &scope, .fo(g_state.sdk), .{i}) catch continue) orelse continue;
+                        new_arr.call(.SetValue, &scope, .fo(g_state.sdk), .{ item, i }) catch continue;
                     }
                 }
 
                 for (@intCast(len)..max_save_games_with_auto) |i| {
                     const new_save_info = (GuiSaveLoadModelT.callStatic(
                         .makeSaveData,
+                        &scope,
                         .fo(g_state.sdk),
                         .{ SaveSlotCategory.game, i },
                     ) catch continue) orelse continue;
-                    new_arr.call(.SetValue, .fo(g_state.sdk), .{ new_save_info, i }) catch continue;
+                    new_arr.call(.SetValue, &scope, .fo(g_state.sdk), .{ new_save_info, i }) catch continue;
                     new_save_info.managed.addRef(.fo(g_state.sdk));
                 }
 
@@ -208,10 +216,10 @@ fn init(api: re.Api) !void {
     );
 }
 
-fn getDefaultSegmentItemSet(save_mgr: re.api.sdk.ManagedObject) !?re.api.sdk.ManagedObject {
-    const partitions_dict = (try g_state.interop_cache.getField(
+fn getDefaultSegmentItemSet(scope: *interop.Scope, save_mgr: re.api.sdk.ManagedObject) !?re.api.sdk.ManagedObject {
+    const partitions_dict = (try scope.getField(
         save_mgr,
-        ._SaveSlotPartitions,
+        "_SaveSlotPartitions",
         ?re.api.sdk.ManagedObject,
         .fo(g_state.sdk),
     )) orelse {
@@ -219,22 +227,21 @@ fn getDefaultSegmentItemSet(save_mgr: re.api.sdk.ManagedObject) !?re.api.sdk.Man
         return null;
     };
 
-    const value_coll = try g_state.interop_cache.callMethod(
+    const value_coll = try scope.callMethod(
         partitions_dict,
         "getValue(app.SaveSlotSegmentType)",
-        .{},
         // Special type for VmObjType.valtype more info:
         // https://github.com/praydog/REFramework/blob/ea66d322fbe2ebb7e2efd8fd6aa6b06779da6f76/src/mods/bindings/Sdk.cpp#L365
-        .{ .type = ?interop.ValueType },
+        ?interop.ValueType,
         .fo(g_state.sdk),
         .{SaveSlotSegmentType.default_0},
     );
     if (value_coll) |v| {
         // ValueType is handled by cache value arena.
         if (v.get(
-            ._Source,
+            "_Source",
             ?re.api.sdk.ManagedObject,
-            &g_state.interop_cache,
+            scope,
             .fo(g_state.sdk),
         )) |item_set| {
             if (item_set) |s| {
@@ -246,9 +253,9 @@ fn getDefaultSegmentItemSet(save_mgr: re.api.sdk.ManagedObject) !?re.api.sdk.Man
     }
 
     log.info("getValue(Default_0) failed, trying _Dict fallback", .{});
-    const dict = (try g_state.interop_cache.getField(
+    const dict = (try scope.getField(
         partitions_dict,
-        ._Dict,
+        "_Dict",
         ?re.api.sdk.ManagedObject,
         .fo(g_state.sdk),
     )) orelse {
@@ -256,45 +263,46 @@ fn getDefaultSegmentItemSet(save_mgr: re.api.sdk.ManagedObject) !?re.api.sdk.Man
         return null;
     };
 
-    return try g_state.interop_cache.callMethod(
+    return try scope.callMethod(
         dict,
         "FindValue(app.SaveSlotSegmentType)",
-        .{},
-        .{ .type = ?re.api.sdk.ManagedObject },
+        ?re.api.sdk.ManagedObject,
         .fo(g_state.sdk),
         .{SaveSlotSegmentType.default_0},
     );
 }
 
 fn expandGamePartition(save_mgr: re.api.sdk.ManagedObject) !bool {
-    const item_set = (try getDefaultSegmentItemSet(save_mgr)) orelse return false;
-    const partitions_arr = (try g_state.interop_cache.callMethod(
+    var scope = g_state.interop_cache.newScope(g_state.allocator);
+    defer scope.deinit();
+
+    const item_set = (try getDefaultSegmentItemSet(&scope, save_mgr)) orelse return false;
+    const partitions_arr = (try scope.callMethod(
         item_set,
         "toValueArray()",
-        .{}, // param custom interops otherwise default interop is used
-        .{ .type = ?SystemArray },
+        ?SystemArray,
         .fo(g_state.sdk),
         .{}, // args
     ) orelse {
         log.err("Could not get partitions array", .{});
         return false;
     });
-    const partitions_len: usize = @intCast(try partitions_arr.call(.GetLength, .fo(g_state.sdk), .{0}));
+    const partitions_len: usize = @intCast(try partitions_arr.call(.GetLength, &scope, .fo(g_state.sdk), .{0}));
     log.info("Found {} partitions in Default_0 segment", .{partitions_len});
 
     var game_partition: ?SaveSlotPartition = null;
     var game_partition_slots: i32 = 0;
 
     for (0..partitions_len) |i| {
-        const mo = (try partitions_arr.call(.GetValue, .fo(g_state.sdk), .{i})) orelse continue;
+        const mo = (try partitions_arr.call(.GetValue, &scope, .fo(g_state.sdk), .{i})) orelse continue;
         const partition = SaveSlotPartition.init(&g_state.interop_cache, .fo(g_state.sdk), mo) catch continue;
 
-        const usage = partition.get(._Usage, .fo(g_state.sdk)) catch continue;
-        const slot_count = partition.get(._SlotCount, .fo(g_state.sdk)) catch continue;
+        const usage = partition.get(._Usage, &scope, .fo(g_state.sdk)) catch continue;
+        const slot_count = partition.get(._SlotCount, &scope, .fo(g_state.sdk)) catch continue;
         log.info("  Partition {}: Usage={}, HeadSlotId={}, SlotCount={}", .{
             i,
             usage,
-            partition.get(._HeadSlotId, .fo(g_state.sdk)) catch continue,
+            partition.get(._HeadSlotId, &scope, .fo(g_state.sdk)) catch continue,
             slot_count,
         });
 
@@ -318,19 +326,18 @@ fn expandGamePartition(save_mgr: re.api.sdk.ManagedObject) !bool {
 
     const extra_slots = max_save_games - game_partition_slots;
 
-    try game_partition.?.set(._SlotCount, .fo(g_state.sdk), max_save_games);
+    try game_partition.?.set(._SlotCount, &scope, .fo(g_state.sdk), max_save_games);
     log.info("Patched Game partition _SlotCount: {} -> {}", .{ game_partition_slots, max_save_games });
 
-    const old_max = try g_state.interop_cache.getField(save_mgr, ._MaxUseSaveSlotCount, i32, .fo(g_state.sdk));
+    const old_max = try scope.getField(save_mgr, "_MaxUseSaveSlotCount", i32, .fo(g_state.sdk));
     const new_max = old_max + extra_slots;
-    try g_state.interop_cache.setField(save_mgr, ._MaxUseSaveSlotCount, .fo(g_state.sdk), new_max);
+    try scope.setField(save_mgr, "_MaxUseSaveSlotCount", .fo(g_state.sdk), new_max);
     log.info("Patched _MaxUseSaveSlotCount: {} -> {}", .{ old_max, new_max });
 
-    g_state.interop_cache.callMethod(
+    scope.callMethod(
         save_mgr,
         "reloadSaveSlotInfo()",
-        .{},
-        .{ .type = void },
+        void,
         .fo(g_state.sdk),
         .{},
     ) catch |e| {

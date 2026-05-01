@@ -17,6 +17,7 @@ const color_active = 0xfff4853d;
 const u = struct {
     var current_category: ?managed_types.ItemCategory = null;
     var show_unknown_items: bool = false;
+    var scope: ?re.interop.Scope = null;
 };
 
 fn drawCategories() void {
@@ -81,8 +82,12 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
     g.api.lockLua();
     defer g.api.unlockLua();
 
+    if (u.scope == null) {
+        u.scope = g.interop_cache.newScope(g.allocator);
+    }
+
     if (g.items.categories.count() == 0) {
-        cimgui_dll.igText("No item info found. Please reload/load a save-data.");
+        cimgui_dll.igText("Couldn't cache item info. Please load/reload a save.");
         return;
     }
 
@@ -106,7 +111,7 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
 
     var items_local_id: i32 = 0;
 
-    var iter = try g.items.iteratorAll();
+    var iter = try g.items.iteratorAll(&u.scope.?);
     defer iter.deinit();
     while (try iter.next()) |item| {
         if (u.current_category) |selected| {

@@ -143,6 +143,9 @@ pub const PlayerContext = interop.ManagedObject("app.PlayerContext", .{
         .params = .{},
         .ret = .{ .type = InvenotryUser },
     },
+    .onUnlinked = .{
+        .params = .{},
+    },
 }, .{});
 
 pub const CharacterManager = interop.ManagedObject("app.CharacterManager", .{

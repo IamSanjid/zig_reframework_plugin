@@ -67,7 +67,7 @@ pub const g = struct {
     pub var tdb: re.sdk.Tdb = undefined;
 
     pub var items: Items = undefined;
-    pub var level: Level = undefined;
+    pub var level: ?Level = null;
 
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     var threaded: std.Io.Threaded = undefined;
@@ -109,6 +109,7 @@ pub const Items = struct {
 
     pub const IteratorAll = struct {
         owner: *Items,
+        scope: *interop.Scope,
         entries: interop.SystemArrayEntries,
         count: u32,
         next_idx: u32 = 0,
@@ -145,27 +146,25 @@ pub const Items = struct {
                     return item_entry.value_ptr.*;
                 } else {
                     const kvp = entry.kvp;
-                    const item_detail = g.interop_cache.getField(kvp, ._Value, ItemDetailData, .fo(g.sdk)) catch continue;
-                    const item_category = item_detail.get(._ItemCategory, .fo(g.sdk)) catch continue;
+                    const item_detail = self.scope.getField(kvp, "_Value", ItemDetailData, .fo(g.sdk)) catch continue;
+                    const item_category = item_detail.get(._ItemCategory, self.scope, .fo(g.sdk)) catch continue;
 
                     // arena allocated ValueType, reset on deinit
-                    const name_message_id = item_detail.get(._NameMessageId, .fo(g.sdk)) catch continue;
-                    const caption_message_id = item_detail.get(._CaptionMessageId, .fo(g.sdk)) catch continue;
+                    const name_message_id = item_detail.get(._NameMessageId, self.scope, .fo(g.sdk)) catch continue;
+                    const caption_message_id = item_detail.get(._CaptionMessageId, self.scope, .fo(g.sdk)) catch continue;
 
-                    const name_message = g.interop_cache.callStaticMethod(
+                    const name_message = self.scope.callStaticMethod(
                         "via.gui.message",
                         "get(System.Guid)",
-                        .{},
-                        .{ .type = interop.SystemStringView },
+                        interop.SystemStringView,
                         .fo(g.sdk),
                         .{name_message_id},
                     ) catch continue;
 
-                    const caption_message = g.interop_cache.callStaticMethod(
+                    const caption_message = self.scope.callStaticMethod(
                         "via.gui.message",
                         "get(System.Guid)",
-                        .{},
-                        .{ .type = interop.SystemStringView },
+                        interop.SystemStringView,
                         .fo(g.sdk),
                         .{caption_message_id},
                     ) catch continue;
@@ -178,15 +177,15 @@ pub const Items = struct {
                         caption_message_utf8 = try std.fmt.allocPrintSentinel(g.arena.allocator(), "UnknownCaption_{}", .{self.next_idx}, 0);
                     }
 
-                    const slot_capacity_data = item_detail.get(._SlotCapacityData, .fo(g.sdk)) catch continue;
+                    const slot_capacity_data = item_detail.get(._SlotCapacityData, self.scope, .fo(g.sdk)) catch continue;
 
                     const details: ItemDetails = .{
                         .id = id,
                         .category = item_category,
                         .name = name_message_utf8,
                         .caption = caption_message_utf8,
-                        .base_capacity = slot_capacity_data.get(._BaseCapacity, .fo(g.sdk)) catch continue,
-                        .base_item_box_capacity = slot_capacity_data.get(._BaseItemBoxCapacity, .fo(g.sdk)) catch continue,
+                        .base_capacity = slot_capacity_data.get(._BaseCapacity, self.scope, .fo(g.sdk)) catch continue,
+                        .base_item_box_capacity = slot_capacity_data.get(._BaseItemBoxCapacity, self.scope, .fo(g.sdk)) catch continue,
                     };
                     item_entry.value_ptr.* = details;
                     return details;
@@ -196,9 +195,8 @@ pub const Items = struct {
             return null;
         }
 
-        pub fn deinit(self: IteratorAll) void {
-            _ = self;
-            _ = g.interop_cache.value_arena.reset(.retain_capacity);
+        pub fn deinit(self: *IteratorAll) void {
+            self.scope.reset();
         }
     };
 
@@ -225,7 +223,7 @@ pub const Items = struct {
         };
     }
 
-    pub fn iteratorAll(self: *Items) !IteratorAll {
+    pub fn iteratorAll(self: *Items, scope: *interop.Scope) !IteratorAll {
         const item_catalog: *ConcurrentCatalogDictionary = self.manager._ItemCatalog;
 
         const dict = item_catalog._Dict;
@@ -251,6 +249,7 @@ pub const Items = struct {
 
         return .{
             .owner = self,
+            .scope = scope,
             .count = @intCast(count),
             .entries = entries,
         };
@@ -267,6 +266,7 @@ pub const Level = struct {
     character_manager: CharacterManager,
     inventory_manager: InventoryManager,
     player_context: PlayerContext,
+    scope: interop.Scope,
 
     fn init() !Level {
         const character_manager = try CharacterManager.init(
@@ -283,20 +283,24 @@ pub const Level = struct {
                 return error.InventoryManagerNotFound,
         );
 
-        const player_context = (try character_manager.call(.getPlayerContextRef, .fo(g.sdk), .{})) orelse
+        var scope = g.interop_cache.newScope(g.allocator);
+
+        const player_context = (try character_manager.call(.getPlayerContextRef, &scope, .fo(g.sdk), .{})) orelse
             return error.PlayerContextNotFound;
 
         return .{
             .character_manager = character_manager,
             .inventory_manager = inventory_manager,
             .player_context = player_context,
+            .scope = scope,
         };
     }
 
     fn checkInventory(self: *Level) !void {
-        const inventory_user = try self.player_context.call(.get_InventoryUserID, .fo(g.sdk), .{});
+        const inventory_user = try self.player_context.call(.get_InventoryUserID, &self.scope, .fo(g.sdk), .{});
         const inventory = (try self.inventory_manager.call(
             .getInventory,
+            &self.scope,
             .fo(g.sdk),
             .{ inventory_user, InventoryType.hand },
         )) orelse return error.InventoryNotFound;
@@ -313,6 +317,9 @@ fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime meth
 fn populateItemCategories() !void {
     g.api.lockLua();
     defer g.api.unlockLua();
+
+    var scope = g.interop_cache.newScope(g.allocator);
+    defer scope.deinit();
 
     const item_category_typedef = g.tdb.findType(.fo(g.sdk), "app.ItemCategory") orelse return error.ItemCategoryTypeNotFound;
     {
@@ -331,7 +338,7 @@ fn populateItemCategories() !void {
             const data: *?*anyopaque = @ptrCast(@alignCast(field.getDataRaw(.fo(g.sdk), null, false) orelse continue));
             const field_value = interop.defaultToZigInterop(re.sdk.ManagedObject)(
                 @constCast(&g.sdk),
-                &g.interop_cache,
+                &scope,
                 field_type,
                 data,
             ) catch continue;
@@ -348,11 +355,24 @@ fn onStart() !void {
 }
 
 fn onPlayerInitialized() !void {
-    g.level = try .init();
-    try g.level.checkInventory();
+    var level = try Level.init();
+    try level.checkInventory();
+    g.level = level;
 }
 
-fn onPlayerItemChange() !void {}
+fn onPlayerUnlinked() void {
+    defer g.items.categories.clearRetainingCapacity();
+
+    var level = g.level orelse return;
+    level.scope.reset();
+
+    g.level = null;
+}
+
+fn onPlayerItemChange() !void {
+    var level = g.level orelse return;
+    try level.checkInventory();
+}
 
 fn installHooks() !void {
     const onStartFn = (try tdbGetMethod(g.tdb, "app.LevelPlayerCreateController", "start()")) orelse
@@ -369,6 +389,12 @@ fn installHooks() !void {
         }.func,
         false,
     );
+
+    // app.GuiManagerBehavior
+    // onItemAcquired(app.ItemAcquiredInfo)
+    // onItemStockChanged(app.InventoryStockEventArgs)
+    // app.TutorialObserver
+    // onUsedEvent(app.InventoryCommandEventArgs)
 
     const onItemAcquiredFn = (try tdbGetMethod(g.tdb, "app.GuiManagerBehavior", "onItemAcquired(app.ItemAcquiredInfo)")) orelse
         return error.AssociateItemMethodNotFound;
@@ -400,6 +426,21 @@ fn installHooks() !void {
         false,
     );
 
+    const onUsedEventFn = (try tdbGetMethod(g.tdb, "app.TutorialObserver", "onUsedEvent(app.InventoryCommandEventArgs)")) orelse
+        return error.AssociateItemMethodNotFound;
+    _ = onUsedEventFn.handle.addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                onPlayerItemChange() catch |e| {
+                    log.err("Error onPlayerItemChange: {}", .{e});
+                };
+            }
+        }.func,
+        false,
+    );
+
     const CharacterManagerT = try CharacterManager.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
     _ = CharacterManagerT.getMethod(.notifyPlayerInitialized).addHook(
         .fo(g.sdk.safe().functions),
@@ -414,14 +455,17 @@ fn installHooks() !void {
         false,
     );
 
-    // app.GuiManagerBehavior
-    // onItemAcquired(app.ItemAcquiredInfo)
-    // onItemStockChanged(app.InventoryStockEventArgs)
-    // app.TutorialObserver
-    // onUsedEvent(app.InventoryCommandEventArgs)
-
-    // app.PlayerContext
-    // get_InventoryUserID()
+    const PlayerContextT = try PlayerContext.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
+    _ = PlayerContextT.getMethod(.onUnlinked).addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                onPlayerUnlinked();
+            }
+        }.func,
+        false,
+    );
 }
 
 fn init(api: re.Api) !void {
