@@ -17,7 +17,7 @@ const color_active = 0xfff4853d;
 const u = struct {
     var current_category: ?managed_types.ItemCategory = null;
     var show_unknown_items: bool = false;
-    var scope: ?re.interop.Scope = null;
+    var scope: ?re.interop.ComptimeScope = null;
 };
 
 fn drawCategories() void {
@@ -83,7 +83,7 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
     defer g.api.unlockLua();
 
     if (u.scope == null) {
-        u.scope = g.interop_cache.newScope(g.allocator);
+        u.scope = g.interop_cache.newComptimeScope(g.allocator, g.tdb);
     }
 
     if (g.items.categories.count() == 0) {

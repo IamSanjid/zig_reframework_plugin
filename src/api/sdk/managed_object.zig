@@ -75,17 +75,16 @@ pub const ManagedObject = extern struct {
         method: Method,
         sdk: Verified(API.REFrameworkSDKData, .{ .method = .invoke }),
         args: []?*anyopaque,
-    ) REFrameworkError!InvokeRet {
-        var out: InvokeRet = .{};
+        out: *InvokeRet,
+    ) REFrameworkError!void {
         const result = sdk.safe().method.safe().invoke(
             method.handle(),
             @ptrCast(self.handle()),
             if (args.len == 0) null else @ptrCast(args.ptr),
             @intCast(args.len * @sizeOf(?*anyopaque)),
-            &out,
+            out,
             @sizeOf(InvokeRet),
         );
         try re_error.mapResult(result);
-        return out;
     }
 };

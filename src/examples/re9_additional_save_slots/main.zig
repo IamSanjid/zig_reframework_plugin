@@ -19,8 +19,9 @@ const GuiSaveLoadModel = managed_types.GuiSaveLoadModel;
 const max_save_games = 90;
 
 const State = struct {
-    api: re.api.Api,
+    api: re.Api,
     sdk: re.api.VerifiedSdk(re.api.specs.minimal.sdk),
+    tdb: re.sdk.Tdb,
     allocator: std.mem.Allocator,
     io: std.Io,
     interop_cache: interop.ManagedTypeCache,
@@ -67,6 +68,7 @@ var auto_save_slots: i32 = 0;
 
 fn init(api: re.Api) !void {
     g_state.api = api;
+    g_state.sdk = try g_state.api.verifiedSdk(re.api.specs.minimal.sdk);
 
     log.info(
         "RE9 Save Slot increase in Zig! Required REFramework Version: {}.{}.{}",
@@ -77,12 +79,11 @@ fn init(api: re.Api) !void {
         },
     );
 
-    g_state.sdk = try g_state.api.verifiedSdk(re.api.specs.minimal.sdk);
-
     const tdb = re.sdk.getTdb(.fo(g_state.sdk)) orelse {
         log.err("Failed to get TDB", .{});
         return;
     };
+    g_state.tdb = tdb;
 
     const m1 = (try tdbGetMethod(tdb, "app.GuiSaveLoadController.Unit", "onSetup")) orelse {
         log.err("Failed to find method app.GuiSaveLoadController.Unit.onSetup", .{});
@@ -276,6 +277,8 @@ fn expandGamePartition(save_mgr: re.api.sdk.ManagedObject) !bool {
     var scope = g_state.interop_cache.newScope(g_state.allocator);
     defer scope.deinit();
 
+    const SaveMgrT = try g_state.interop_cache.resolve("app.SaveServiceManager", g_state.tdb, .fo(g_state.sdk));
+
     const item_set = (try getDefaultSegmentItemSet(&scope, save_mgr)) orelse return false;
     const partitions_arr = (try scope.callMethod(
         item_set,
@@ -329,12 +332,12 @@ fn expandGamePartition(save_mgr: re.api.sdk.ManagedObject) !bool {
     try game_partition.?.set(._SlotCount, &scope, .fo(g_state.sdk), max_save_games);
     log.info("Patched Game partition _SlotCount: {} -> {}", .{ game_partition_slots, max_save_games });
 
-    const old_max = try scope.getField(save_mgr, "_MaxUseSaveSlotCount", i32, .fo(g_state.sdk));
+    const old_max = try SaveMgrT.scoped(&scope).get(save_mgr, ._MaxUseSaveSlotCount, i32, .fo(g_state.sdk));
     const new_max = old_max + extra_slots;
-    try scope.setField(save_mgr, "_MaxUseSaveSlotCount", .fo(g_state.sdk), new_max);
+    try SaveMgrT.scoped(&scope).set(save_mgr, ._MaxUseSaveSlotCount, .fo(g_state.sdk), new_max);
     log.info("Patched _MaxUseSaveSlotCount: {} -> {}", .{ old_max, new_max });
 
-    scope.callMethod(
+    SaveMgrT.scoped(&scope).call(
         save_mgr,
         "reloadSaveSlotInfo()",
         void,

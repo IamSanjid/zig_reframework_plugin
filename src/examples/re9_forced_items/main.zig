@@ -109,7 +109,7 @@ pub const Items = struct {
 
     pub const IteratorAll = struct {
         owner: *Items,
-        scope: *interop.Scope,
+        scope: *interop.ComptimeScope,
         entries: interop.SystemArrayEntries,
         count: u32,
         next_idx: u32 = 0,
@@ -146,13 +146,16 @@ pub const Items = struct {
                     return item_entry.value_ptr.*;
                 } else {
                     const kvp = entry.kvp;
-                    const item_detail = self.scope.getField(kvp, "_Value", ItemDetailData, .fo(g.sdk)) catch continue;
+                    // Don't know the typename of the kvp, since its not a hot path, we can afford to do
+                    // extra lookups.
+                    const item_detail = self.scope.runtime.getField(kvp, "_Value", ItemDetailData, .fo(g.sdk)) catch continue;
                     const item_category = item_detail.get(._ItemCategory, self.scope, .fo(g.sdk)) catch continue;
 
                     // arena allocated ValueType, reset on deinit
                     const name_message_id = item_detail.get(._NameMessageId, self.scope, .fo(g.sdk)) catch continue;
                     const caption_message_id = item_detail.get(._CaptionMessageId, self.scope, .fo(g.sdk)) catch continue;
 
+                    // We know the type name and method signature, so comptime version
                     const name_message = self.scope.callStaticMethod(
                         "via.gui.message",
                         "get(System.Guid)",
@@ -223,7 +226,7 @@ pub const Items = struct {
         };
     }
 
-    pub fn iteratorAll(self: *Items, scope: *interop.Scope) !IteratorAll {
+    pub fn iteratorAll(self: *Items, scope: *interop.ComptimeScope) !IteratorAll {
         const item_catalog: *ConcurrentCatalogDictionary = self.manager._ItemCatalog;
 
         const dict = item_catalog._Dict;

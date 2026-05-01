@@ -26,7 +26,6 @@ pub const MethodMetadata = struct {
         allocator: std.mem.Allocator,
         sdk: api.VerifiedSdk(.{
             .method = sdk_managed_specs.method,
-            .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
         handle: api.sdk.Method,
@@ -82,9 +81,10 @@ pub const ManagedObjectMetadata = struct {
 pub const TypeDefMetadata = struct {
     methods: std.StringHashMap(*MethodMetadata),
     fields: std.StringHashMap(*FieldMetadata),
+    def: api.sdk.TypeDefinition,
 
-    fn init(allocator: std.mem.Allocator) @This() {
-        return .{ .methods = .init(allocator), .fields = .init(allocator) };
+    fn init(allocator: std.mem.Allocator, def: api.sdk.TypeDefinition) @This() {
+        return .{ .methods = .init(allocator), .fields = .init(allocator), .def = def };
     }
 };
 
@@ -99,7 +99,8 @@ const TypeDefContext = struct {
     }
 };
 
-// Every check is at runtime, don't know any better way of doing it...
+/// A cache for managed type metadata, which is used to avoid redundant string allocations
+/// and comparisons when accessing managed type metadata and invoking methods or accessing fields.
 pub const ManagedTypeCache = struct {
     cache_arena: std.heap.ArenaAllocator,
     value_arena: std.heap.ArenaAllocator,
@@ -168,38 +169,45 @@ pub const ManagedTypeCache = struct {
     }
 
     pub fn newScope(self: *Self, allocator: std.mem.Allocator) Scope {
-        return Scope.init(allocator, self);
+        return .init(allocator, self);
     }
 
-    pub fn getOrCacheMethodMetadata(
+    fn getOrCacheTypeDefMetadata(
         self: *Self,
-        sdk: api.VerifiedSdk(.{
-            .method = sdk_managed_specs.method,
-            .managed_object = sdk_managed_specs.managed_object,
-            .type_definition = .all,
-        }),
         type_def: api.sdk.TypeDefinition,
-        sig: [:0]const u8,
-    ) !*MethodMetadata {
-        try self.mutex.lock(self.io);
-        defer self.mutex.unlock(self.io);
-
+    ) !*TypeDefMetadata {
         const arena = self.cache_arena.allocator();
 
         const type_def_entry = try self.type_def_map.getOrPut(arena, type_def);
         if (!type_def_entry.found_existing) {
             const type_def_metadata = try arena.create(TypeDefMetadata);
-            type_def_metadata.* = TypeDefMetadata.init(arena);
+            type_def_metadata.* = TypeDefMetadata.init(arena, type_def);
             type_def_entry.value_ptr.* = type_def_metadata;
         }
 
+        return type_def_entry.value_ptr.*;
+    }
+
+    fn getOrCacheMethodMetadataTo(
+        self: *Self,
+        type_def_metadata: *TypeDefMetadata,
+        sig: [:0]const u8,
+        sdk: api.VerifiedSdk(.{
+            .method = sdk_managed_specs.method,
+            .type_definition = .all,
+        }),
+    ) !*MethodMetadata {
+        const arena = self.cache_arena.allocator();
+
         const method_sig = sig;
 
-        const method_cache_entry = try type_def_entry.value_ptr.*.methods.getOrPut(method_sig);
+        const method_cache_entry = try type_def_metadata.*.methods.getOrPut(method_sig);
         const method_metadata = if (method_cache_entry.found_existing) blk: {
             break :blk method_cache_entry.value_ptr.*;
         } else blk: {
-            errdefer type_def_entry.value_ptr.*.methods.removeByPtr(method_cache_entry.key_ptr);
+            errdefer type_def_metadata.*.methods.removeByPtr(method_cache_entry.key_ptr);
+
+            const type_def = type_def_metadata.def;
 
             const handle = type_def.findMethod(.fromOther(sdk), method_sig) orelse {
                 return error.MethodNotFound;
@@ -215,34 +223,25 @@ pub const ManagedTypeCache = struct {
         return method_metadata;
     }
 
-    pub fn getOrCacheFieldMetadata(
+    fn getOrCacheFieldMetadataTo(
         self: *Self,
+        type_def_metadata: *TypeDefMetadata,
+        field_name: [:0]const u8,
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
-            .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
-        type_def: api.sdk.TypeDefinition,
-        field_name: [:0]const u8,
     ) !*FieldMetadata {
-        try self.mutex.lock(self.io);
-        defer self.mutex.unlock(self.io);
-
         const arena = self.cache_arena.allocator();
 
-        const type_def_entry = try self.type_def_map.getOrPut(arena, type_def);
-        if (!type_def_entry.found_existing) {
-            const type_def_metadata = try arena.create(TypeDefMetadata);
-            type_def_metadata.* = TypeDefMetadata.init(arena);
-            type_def_entry.value_ptr.* = type_def_metadata;
-        }
-
-        const field_cache_entry = try type_def_entry.value_ptr.*.fields.getOrPut(field_name);
+        const field_cache_entry = try type_def_metadata.*.fields.getOrPut(field_name);
 
         const field_metadata: *FieldMetadata = if (field_cache_entry.found_existing) blk: {
             break :blk field_cache_entry.value_ptr.*;
         } else blk: {
-            errdefer type_def_entry.value_ptr.*.fields.removeByPtr(field_cache_entry.key_ptr);
+            errdefer type_def_metadata.*.fields.removeByPtr(field_cache_entry.key_ptr);
+
+            const type_def = type_def_metadata.def;
 
             const field_handle = type_def.findField(.fo(sdk), field_name) orelse {
                 return error.FieldNotFound;
@@ -264,11 +263,54 @@ pub const ManagedTypeCache = struct {
         return field_metadata;
     }
 
+    pub inline fn getOrCacheMethodMetadata(
+        self: *Self,
+        sdk: api.VerifiedSdk(.{
+            .method = sdk_managed_specs.method,
+            .type_definition = .all,
+        }),
+        type_def: api.sdk.TypeDefinition,
+        sig: [:0]const u8,
+    ) !*MethodMetadata {
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const type_def_metadata = try self.getOrCacheTypeDefMetadata(type_def);
+        return self.getOrCacheMethodMetadataTo(type_def_metadata, sig, .fo(sdk));
+    }
+
+    pub inline fn getOrCacheFieldMetadata(
+        self: *Self,
+        sdk: api.VerifiedSdk(.{
+            .field = sdk_managed_specs.field,
+            .type_definition = .all,
+        }),
+        type_def: api.sdk.TypeDefinition,
+        field_name: [:0]const u8,
+    ) !*FieldMetadata {
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const type_def_metadata = try self.getOrCacheTypeDefMetadata(type_def);
+        return self.getOrCacheFieldMetadataTo(type_def_metadata, field_name, .fo(sdk));
+    }
+
     pub fn appendDiagnostics(self: *Self, comptime fmt: []const u8, args: anytype) !void {
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
 
         try self.diagnostics.print(self.value_arena, fmt ++ "\n", args);
+    }
+
+    /// Resolves a managed type by its name and returns its metadata, it will cache the required "metadata"
+    /// so calling it with same type name will be faster after the first call.
+    pub inline fn resolve(
+        self: *Self,
+        comptime type_name: [:0]const u8,
+        tdb: api.sdk.Tdb,
+        sdk: api.VerifiedSdk(.{ .tdb = .find_type }),
+    ) !ResolvedType(type_name) {
+        return .init(self, tdb, .fo(sdk));
     }
 
     fn appendError(self: *Self, err: []const u8) !void {
@@ -278,6 +320,9 @@ pub const ManagedTypeCache = struct {
     }
 };
 
+/// Should be used for scoped access to cached metadata and interop functions.
+/// Not thread safe, should be created and used within the same thread, but multiple
+/// scopes can exist at the same time.
 pub const Scope = struct {
     cache: *ManagedTypeCache,
     arena: std.heap.ArenaAllocator,
@@ -306,7 +351,6 @@ pub const Scope = struct {
         comptime static: bool,
         sdk: api.VerifiedSdk(.{
             .method = sdk_managed_specs.method,
-            .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
         args: anytype,
@@ -332,7 +376,8 @@ pub const Scope = struct {
         var built_args = try buildMethodArgs(@constCast(&sdk), self, method_metadata, args, param_interops);
 
         const managed: api.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(obj)) };
-        var invoke_res = try managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args);
+        var invoke_res: api.InvokeRet = .{};
+        try managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args, &invoke_res);
 
         if (invoke_res.exception_thrown) {
             return error.ExceptionThrown;
@@ -372,7 +417,6 @@ pub const Scope = struct {
         is_obj_valtype: bool,
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
-            .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
     ) !T {
@@ -399,7 +443,6 @@ pub const Scope = struct {
         comptime static: bool,
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
-            .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
         value: anytype,
@@ -436,7 +479,6 @@ pub const Scope = struct {
         comptime passed_managed_obj: bool,
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
-            .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
     ) !T {
@@ -472,7 +514,6 @@ pub const Scope = struct {
         comptime static: bool,
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
-            .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
         }),
         value: anytype,
@@ -555,9 +596,8 @@ pub const Scope = struct {
         comptime RetType: type,
         sdk: api.VerifiedSdk(.{
             .method = sdk_managed_specs.method,
-            .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
-            .functions = .{.get_tdb},
+            .functions = .get_tdb,
             .tdb = .find_type,
         }),
         args: anytype,
@@ -575,9 +615,8 @@ pub const Scope = struct {
         comptime rInterop: ?ToZigInterop(RetType),
         sdk: api.VerifiedSdk(.{
             .method = sdk_managed_specs.method,
-            .managed_object = sdk_managed_specs.managed_object,
             .type_definition = .all,
-            .functions = .{.get_tdb},
+            .functions = .get_tdb,
             .tdb = .find_type,
         }),
         args: anytype,
@@ -635,7 +674,7 @@ pub const Scope = struct {
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
             .type_definition = .all,
-            .functions = .{.get_tdb},
+            .functions = .get_tdb,
             .tdb = .find_type,
         }),
     ) !T {
@@ -651,7 +690,7 @@ pub const Scope = struct {
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
             .type_definition = .all,
-            .functions = .{.get_tdb},
+            .functions = .get_tdb,
             .tdb = .find_type,
         }),
     ) !T {
@@ -697,7 +736,7 @@ pub const Scope = struct {
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
             .type_definition = .all,
-            .functions = .{.get_tdb},
+            .functions = .get_tdb,
             .tdb = .find_type,
         }),
         value: anytype,
@@ -713,7 +752,7 @@ pub const Scope = struct {
         sdk: api.VerifiedSdk(.{
             .field = sdk_managed_specs.field,
             .type_definition = .all,
-            .functions = .{.get_tdb},
+            .functions = .get_tdb,
             .tdb = .find_type,
         }),
         value: anytype,
@@ -723,6 +762,484 @@ pub const Scope = struct {
         return try self.setFieldFromTypeDef(null, type_def, field_name, interop, false, true, .fo(sdk), value);
     }
 };
+
+/// Represents a resolved managed type with "static" cached metadata, which allows invoking methods
+/// and accessing fields, but the method signatures and field names have to be comptime-known,
+/// and has to provided to each respective function calls. The cached "metadata"s out-lives the scope.
+///
+/// Basically `ManagedObjectType` but without manually "creating" the type at comptime but
+/// "creates" some sort of metdata cache map as you use it.
+pub fn ResolvedType(comptime type_name: [:0]const u8) type {
+    return struct {
+        var cached_metadata: std.atomic.Value(?*TypeDefMetadata) = .init(null);
+
+        type_def_metadata: *TypeDefMetadata,
+
+        const ResolvedT = @This();
+
+        pub fn init(cache: *ManagedTypeCache, tdb: api.sdk.Tdb, sdk: api.VerifiedSdk(.{ .tdb = .find_type })) !ResolvedT {
+            return .{
+                .type_def_metadata = try getTypeDefMetadata(cache, tdb, .fo(sdk)),
+            };
+        }
+
+        pub inline fn scoped(self: ResolvedT, scope: *Scope) Scoped {
+            return .{
+                .scope = scope,
+                .type_def_metadata = self.type_def_metadata,
+            };
+        }
+
+        fn getObj(obj: anytype) ?*anyopaque {
+            const ObjType = @TypeOf(obj);
+            switch (ObjType) {
+                api.sdk.ManagedObject => {
+                    return obj.raw;
+                },
+                *api.sdk.ManagedObject => {
+                    return obj.*.raw;
+                },
+                ValueType => {
+                    return obj.valuePtr();
+                },
+                else => return null,
+            }
+
+            if (isManagedInterop(ObjType)) {
+                return obj.managed.raw;
+            }
+
+            const obj_type_info = @typeInfo(ObjType);
+            switch (obj_type_info) {
+                .pointer => |p| {
+                    if (p.child == ValueType) {
+                        return obj.valuePtr();
+                    }
+                    return @ptrCast(@alignCast(obj));
+                },
+                .optional => |o| {
+                    if (o) |val| {
+                        return getObj(val);
+                    } else {
+                        return null;
+                    }
+                },
+                .null => return null,
+                .undefined => return null,
+                else => {
+                    @compileError("Only pointer types, optional pointer types, ManagedObject or interop structs with 'managed' field are supported as method call object.");
+                },
+            }
+        }
+
+        fn getObjDetectManaged(obj: anytype) struct { ?*anyopaque, bool } {
+            const ObjType = @TypeOf(obj);
+            const isManagedObj = struct {
+                inline fn func(comptime T: type) bool {
+                    return isManagedInterop(T) or
+                        T == api.sdk.ManagedObject or
+                        T == @TypeOf((api.sdk.ManagedObject{ .raw = null }).raw);
+                }
+            }.func;
+            if (isManagedObj(ObjType)) {
+                return .{ getObj(obj), true };
+            }
+
+            const obj_type_info = @typeInfo(ObjType);
+            switch (obj_type_info) {
+                .pointer => |p| {
+                    return .{ getObj(obj), isManagedObj(p.child) };
+                },
+                .optional => |o| {
+                    if (o) |val| {
+                        return getObjDetectManaged(val);
+                    } else {
+                        return .{ null, isManagedObj(o.child) };
+                    }
+                },
+                else => {
+                    return .{ getObj(obj), false };
+                },
+            }
+        }
+
+        fn getTypeDefMetadata(cache: *ManagedTypeCache, tdb: api.sdk.Tdb, sdk: api.VerifiedSdk(.{ .tdb = .find_type })) !*TypeDefMetadata {
+            return if (cached_metadata.load(.acquire)) |metadata| blk: {
+                break :blk metadata;
+            } else blk: {
+                const type_def = tdb.findType(.fo(sdk), type_name) orelse return error.NoTypeDefFound;
+
+                try cache.lock();
+                defer cache.unlock();
+                const new_metadata = try cache.getOrCacheTypeDefMetadata(type_def);
+                cached_metadata.store(new_metadata, .release);
+                break :blk new_metadata;
+            };
+        }
+
+        // (Ab)using Zig's type memoization to cache metadata.
+        fn Method(
+            comptime sig: [:0]const u8,
+            comptime param_interops: anytype,
+            comptime RetType: type,
+            comptime rInterop: ?ToZigInterop(RetType),
+            comptime static: bool,
+        ) type {
+            return struct {
+                const _sig = sig;
+                const _param_interops = param_interops;
+                const _RetType = RetType;
+                const _rInterop = rInterop;
+                const _static = static;
+
+                var cached_metadata: std.atomic.Value(?*MethodMetadata) = .init(null);
+
+                const MethodT = @This();
+
+                fn getMetadata(
+                    scope: *Scope,
+                    type_def_metadata: *TypeDefMetadata,
+                    sdk: api.VerifiedSdk(.{
+                        .method = sdk_managed_specs.method,
+                        .type_definition = .all,
+                    }),
+                ) !*MethodMetadata {
+                    return if (MethodT.cached_metadata.load(.acquire)) |metadata| blk: {
+                        break :blk metadata;
+                    } else blk: {
+                        try scope.cache.lock();
+                        defer scope.cache.unlock();
+                        const method_metadata = try scope.cache.getOrCacheMethodMetadataTo(type_def_metadata, MethodT._sig, .fo(sdk));
+
+                        // We're not creating any new metadata here just storing the "reference" to already existing one
+                        // so no need for cache arena.
+                        MethodT.cached_metadata.store(method_metadata, .release);
+                        break :blk method_metadata;
+                    };
+                }
+            };
+        }
+
+        fn Field(
+            comptime field_name: [:0]const u8,
+            comptime static: bool,
+        ) type {
+            return struct {
+                const _field_name = field_name;
+                const _static = static;
+
+                field_metadata: *FieldMetadata,
+                is_passed_type_valtype: bool,
+
+                const FieldT = @This();
+
+                var cached_metadata: std.atomic.Value(?*FieldT) = .init(null);
+
+                fn getMetadata(
+                    scope: *Scope,
+                    type_def_metadata: *TypeDefMetadata,
+                    sdk: api.VerifiedSdk(.{
+                        .field = sdk_managed_specs.field,
+                        .type_definition = .all,
+                    }),
+                ) !struct { *FieldMetadata, bool } {
+                    return if (FieldT.cached_metadata.load(.acquire)) |metadata| blk: {
+                        break :blk .{ metadata.field_metadata, metadata.is_passed_type_valtype };
+                    } else blk: {
+                        try scope.cache.lock();
+                        defer scope.cache.unlock();
+                        const field_metadata = try scope.cache.getOrCacheFieldMetadataTo(type_def_metadata, FieldT._field_name, .fo(sdk));
+
+                        const is_passed_type_valtype = type_def_metadata.def.getVmObjType(.fo(sdk)) == .valtype;
+
+                        // We use the cache arena, we want this to live as long as the cache itself.
+                        const static_storage = try scope.cache.cache_arena.allocator().create(FieldT);
+                        static_storage.* = .{
+                            .field_metadata = field_metadata,
+                            .is_passed_type_valtype = is_passed_type_valtype,
+                        };
+                        FieldT.cached_metadata.store(static_storage, .release);
+                        break :blk .{ field_metadata, is_passed_type_valtype };
+                    };
+                }
+            };
+        }
+
+        const Scoped = struct {
+            scope: *Scope,
+            type_def_metadata: *TypeDefMetadata,
+
+            const Self = @This();
+
+            fn callMethodWithInteropsImpl(
+                self: Self,
+                obj: anytype,
+                comptime sig: [:0]const u8,
+                comptime param_interops: anytype,
+                comptime RetType: type,
+                comptime rInterop: ?ToZigInterop(RetType),
+                comptime static: bool,
+                sdk: api.VerifiedSdk(.{
+                    .method = sdk_managed_specs.method,
+                    .type_definition = .all,
+                }),
+                args: anytype,
+            ) !RetType {
+                const Static = Method(sig, param_interops, RetType, rInterop, static);
+                const method_metadata = try Static.getMetadata(self.scope, self.type_def_metadata, .fo(sdk));
+
+                const retInterop = comptime Static._rInterop orelse defaultToZigInterop(Static._RetType);
+                return self.scope.invokeMethod(
+                    getObj(obj),
+                    method_metadata,
+                    Static._param_interops,
+                    .{ .type = Static._RetType, .interop = retInterop },
+                    static,
+                    .fo(sdk),
+                    args,
+                );
+            }
+
+            /// Calls instance method with the given method signature on the provided object.
+            /// The method metadata is cached in a static struct to avoid redundant string allocations and comparisons on every call,
+            /// so it's much faster when calling the same method multiple times.
+            pub inline fn call(
+                self: Self,
+                obj: anytype,
+                comptime sig: [:0]const u8,
+                comptime RetType: type,
+                sdk: api.VerifiedSdk(.{
+                    .method = sdk_managed_specs.method,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+                args: anytype,
+            ) !RetType {
+                return self.callWithInterops(obj, sig, .{}, RetType, null, .fo(sdk), args);
+            }
+
+            /// Calls instance method with the given method signature on the provided object.
+            /// Same as `Scope.callMethodWithInterops` but accepts comptime type name and method signature
+            /// Stores them in a static struct to avoid redundant string allocations and comparisons on every call,
+            /// so it's much faster when calling the same method multiple times.
+            pub fn callWithInterops(
+                self: Self,
+                obj: anytype,
+                comptime sig: [:0]const u8,
+                comptime param_interops: anytype,
+                comptime RetType: type,
+                comptime rInterop: ?ToZigInterop(RetType),
+                sdk: api.VerifiedSdk(.{
+                    .method = sdk_managed_specs.method,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+                args: anytype,
+            ) !RetType {
+                return self.callMethodWithInteropsImpl(obj, sig, param_interops, RetType, rInterop, false, .fo(sdk), args);
+            }
+
+            /// Same as `callMethod` but for static methods, see its documentation for details.
+            pub inline fn callStaticMethod(
+                self: Self,
+                comptime sig: [:0]const u8,
+                comptime RetType: type,
+                sdk: api.VerifiedSdk(.{
+                    .method = sdk_managed_specs.method,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+                args: anytype,
+            ) !RetType {
+                return self.callStaticMethodWithInterops(sig, .{}, RetType, null, .fo(sdk), args);
+            }
+
+            /// Same as `callMethodWithInterops` but for static methods, see its documentation for details.
+            pub fn callStaticMethodWithInterops(
+                self: Self,
+                comptime sig: [:0]const u8,
+                comptime param_interops: anytype,
+                comptime RetType: type,
+                comptime rInterop: ?ToZigInterop(RetType),
+                sdk: api.VerifiedSdk(.{
+                    .method = sdk_managed_specs.method,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+                args: anytype,
+            ) !RetType {
+                return self.callMethodWithInteropsImpl(null, sig, param_interops, RetType, rInterop, true, .fo(sdk), args);
+            }
+
+            fn getFieldWithInteropImpl(
+                self: Self,
+                obj: anytype,
+                comptime field: @EnumLiteral(),
+                comptime T: type,
+                comptime interop: ToZigInterop(T),
+                comptime static: bool,
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+            ) !T {
+                const Static = Field(@tagName(field), static);
+                const field_metadata = (try Static.getMetadata(self.scope, self.type_def_metadata, .fo(sdk))).@"0";
+
+                return self.scope.readField(
+                    getObj(obj),
+                    field_metadata,
+                    T,
+                    interop,
+                    static,
+                    .fo(sdk),
+                );
+            }
+
+            pub inline fn get(
+                self: Self,
+                obj: anytype,
+                comptime field: @EnumLiteral(),
+                comptime T: type,
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+            ) !T {
+                return self.getWithInterop(obj, field, T, defaultToZigInterop(T), .fo(sdk));
+            }
+
+            pub fn getWithInterop(
+                self: Self,
+                obj: anytype,
+                comptime field: @EnumLiteral(),
+                comptime T: type,
+                comptime interop: ToZigInterop(T),
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+            ) !T {
+                return self.getFieldWithInteropImpl(obj, field, T, interop, false, .fo(sdk));
+            }
+
+            pub inline fn getStatic(
+                self: Self,
+                comptime field: @EnumLiteral(),
+                comptime T: type,
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+            ) !T {
+                return self.getStaticWithInterop(field, T, defaultToZigInterop(T), .fo(sdk));
+            }
+
+            pub inline fn getStaticWithInterop(
+                self: Self,
+                comptime field: @EnumLiteral(),
+                comptime T: type,
+                comptime interop: ToZigInterop(T),
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+            ) !T {
+                return self.getFieldWithInteropImpl(null, field, T, interop, true, .fo(sdk));
+            }
+
+            fn setFieldWithInteropImpl(
+                self: Self,
+                obj: anytype,
+                comptime field: @EnumLiteral(),
+                comptime interop: FromZigInterop,
+                comptime static: bool,
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+                value: anytype,
+            ) !void {
+                const Static = Field(@tagName(field), static);
+                const field_metadata, const is_passed_type_valtype = try Static.getMetadata(self.scope, self.type_def_metadata, .fo(sdk));
+
+                const obj_val, const passed_managed_obj = getObjDetectManaged(obj);
+                return self.scope.writeField(
+                    obj_val,
+                    field_metadata,
+                    interop,
+                    is_passed_type_valtype and !passed_managed_obj,
+                    static,
+                    .fo(sdk),
+                    value,
+                );
+            }
+
+            pub inline fn set(
+                self: Self,
+                obj: anytype,
+                comptime field: @EnumLiteral(),
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+                value: anytype,
+            ) !void {
+                return self.setWithInterop(obj, field, defaultFromZigInterop, .fo(sdk), value);
+            }
+
+            pub inline fn setWithInterop(
+                self: Self,
+                obj: anytype,
+                comptime field: @EnumLiteral(),
+                comptime interop: FromZigInterop,
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+                value: anytype,
+            ) !void {
+                return self.setFieldWithInteropImpl(obj, field, interop, false, .fo(sdk), value);
+            }
+
+            pub inline fn setStatic(
+                self: Self,
+                comptime field: @EnumLiteral(),
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .tdb = .find_type,
+                }),
+                value: anytype,
+            ) !void {
+                return self.setStaticWithInterop(field, defaultFromZigInterop, .fo(sdk), value);
+            }
+
+            pub fn setStaticWithInterop(
+                self: Self,
+                comptime field: @EnumLiteral(),
+                comptime interop: FromZigInterop,
+                sdk: api.VerifiedSdk(.{
+                    .field = sdk_managed_specs.field,
+                    .type_definition = .all,
+                    .functions = .{.get_tdb},
+                    .tdb = .find_type,
+                }),
+                value: anytype,
+            ) !void {
+                return self.setFieldWithInteropImpl(null, field, interop, true, .fo(sdk), value);
+            }
+        };
+    };
+}
 
 const sdk_managed_specs = .{
     .functions = .{
@@ -1530,7 +2047,8 @@ pub fn ManagedObject(
                 // don't care if the "sdk" value was modified, it gets discarded anyways.
                 var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), scope, method_metadata, args);
 
-                var invoke_res = try self.managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args);
+                var invoke_res: api.InvokeRet = .{};
+                try self.managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args, &invoke_res);
 
                 if (invoke_res.exception_thrown) {
                     return error.ExceptionThrown;
@@ -1715,7 +2233,8 @@ pub fn ManagedObject(
             // doesn't matter if the "sdk" value gets modified, it will get discarded.
             var built_args = try buildMethodArgsFromData(Data, @constCast(&sdk), scope, method_metadata, args);
 
-            var invoke_res = try method_metadata.handle.invoke(.fo(sdk), null, &built_args);
+            var invoke_res: api.InvokeRet = .{};
+            try method_metadata.handle.invoke(.fo(sdk), null, &built_args, &invoke_res);
 
             if (invoke_res.exception_thrown) {
                 return error.ExceptionThrown;
@@ -1875,12 +2394,7 @@ pub fn ManagedObject(
                 defer cache.unlock();
 
                 // getting existing cached type_def metadata...
-                const type_def_entry = try cache.type_def_map.getOrPut(arena, type_def);
-                if (!type_def_entry.found_existing) {
-                    const type_def_metadata = try arena.create(TypeDefMetadata);
-                    type_def_metadata.* = TypeDefMetadata.init(arena);
-                    type_def_entry.value_ptr.* = type_def_metadata;
-                }
+                const type_def_metdata = try cache.getOrCacheTypeDefMetadata(type_def);
 
                 // Checking methods
                 inline for (method_names) |default_method_name| {
@@ -1892,7 +2406,7 @@ pub fn ManagedObject(
                         default_method_name;
                     const method_sig = buildMethodSignature(method_name, method_metadata.params);
 
-                    const method_cache_entry = try type_def_entry.value_ptr.*.methods.getOrPut(method_sig);
+                    const method_cache_entry = try type_def_metdata.*.methods.getOrPut(method_sig);
                     if (method_cache_entry.found_existing) {
                         try collected_methods.append(
                             arena,
@@ -1902,7 +2416,7 @@ pub fn ManagedObject(
                         // if we're removing on error, why not just not insert until we know it's valid?
                         // because it's a cold path, meaning these errors should happen rarely. otherwise,
                         // it's a user use case issue, they should be aware of what is available and what not.
-                        errdefer type_def_entry.value_ptr.*.methods.removeByPtr(method_cache_entry.key_ptr);
+                        errdefer type_def_metdata.*.methods.removeByPtr(method_cache_entry.key_ptr);
 
                         const method = type_def.findMethod(.fromOther(sdk), method_sig) orelse {
                             cache.appendError("'" ++ method_sig ++ "' was not found in '" ++ full_type_name ++ "'") catch {};
@@ -1925,12 +2439,12 @@ pub fn ManagedObject(
                 // Checking fields
                 inline for (field_names) |field_name| {
                     // TODO: Check field Types for interoperability.
-                    const field_cache_entry = try type_def_entry.value_ptr.*.fields.getOrPut(field_name);
+                    const field_cache_entry = try type_def_metdata.*.fields.getOrPut(field_name);
 
                     if (field_cache_entry.found_existing) {
                         try collected_fields.append(arena, field_cache_entry.value_ptr.*);
                     } else {
-                        errdefer type_def_entry.value_ptr.*.fields.removeByPtr(field_cache_entry.key_ptr);
+                        errdefer type_def_metdata.*.fields.removeByPtr(field_cache_entry.key_ptr);
 
                         const field_handle = type_def.findField(.fo(sdk), field_name) orelse {
                             cache.appendError("'" ++ field_name ++ "' was not found in '" ++ full_type_name ++ "'") catch {};
@@ -1969,8 +2483,7 @@ pub fn ManagedObject(
 
 fn ManagedObjectNew(comptime Builder: type) type {
     return struct {
-        pub const type_name_hash: u64 = std.hash_map.hashString(fullTypeName());
-        var static_metadata: std.atomic.Value(?*ManagedObjectMetadata) = .init(null);
+        var cached_metadata: std.atomic.Value(?*ManagedObjectMetadata) = .init(null);
 
         metadata: *ManagedObjectMetadata,
 
@@ -2001,48 +2514,69 @@ fn ManagedObjectNew(comptime Builder: type) type {
             pub inline fn call(
                 self: Self,
                 comptime method: @EnumLiteral(),
-                sdk: ManagedSdk,
                 scope: *Scope,
+                sdk: ManagedSdk,
                 args: anytype,
             ) !Builder.GetMethod(method).RetType {
                 const Method = Builder.GetMethod(method);
 
-                const method_metadata = self.metadata.methods[Method.Id];
-                return scope.invokeMethod(self.managed.raw, method_metadata, Method.ParamInterops, Method.RetType, false, .fo(sdk), args);
+                const method_metadata = self.runtime.metadata.methods[Method.Id];
+                return scope.invokeMethod(
+                    self.managed.raw,
+                    method_metadata,
+                    Method.ParamInteropsTuple,
+                    .{ .type = Method.RetType, .interop = Method.retInterop },
+                    false,
+                    .fo(sdk),
+                    args,
+                );
             }
 
             // https://github.com/praydog/REFramework/blob/63dd83ead22bbab924b93bbd32e5be36d3a09a4d/src/mods/bindings/Sdk.cpp#L1246
             pub inline fn get(
                 self: Self,
                 comptime field: @EnumLiteral(),
-                sdk: ManagedSdk,
                 scope: *Scope,
+                sdk: ManagedSdk,
             ) !ComptimeFieldType(field) {
                 const Field = Builder.GetField(field);
-                const field_metadata = self.metadata.fields[Field.Id];
-                return scope.readField(self.managed.raw, field_metadata, Field.Type, Field.get, false, .fo(sdk));
+                const field_metadata = self.runtime.metadata.fields[Field.Id];
+                return scope.readField(
+                    self.managed.raw,
+                    field_metadata,
+                    Field.Type,
+                    Field.get,
+                    false,
+                    .fo(sdk),
+                );
             }
 
             // https://github.com/praydog/REFramework/blob/63dd83ead22bbab924b93bbd32e5be36d3a09a4d/src/mods/bindings/Sdk.cpp#L1232
             pub inline fn set(
                 self: Self,
                 comptime field: @EnumLiteral(),
-                sdk: ManagedSdk,
                 scope: *Scope,
+                sdk: ManagedSdk,
                 value: ComptimeFieldType(field),
             ) !void {
-                @setRuntimeSafety(false);
                 const Field = Builder.GetField(field);
-
                 const field_metadata = self.runtime.metadata.fields[Field.Id];
-                return scope.writeField(self.managed.raw, field_metadata, Field.set, false, false, .fo(sdk), value);
+                return scope.writeField(
+                    self.managed.raw,
+                    field_metadata,
+                    Field.set,
+                    false,
+                    false,
+                    .fo(sdk),
+                    value,
+                );
             }
 
             pub inline fn callStatic(
                 self: Self,
                 comptime method: @EnumLiteral(),
-                sdk: ManagedSdk,
                 scope: *Scope,
+                sdk: ManagedSdk,
                 args: anytype,
             ) !Builder.GetMethod(method).RetType {
                 return self.runtime.callStatic(method, sdk, scope, args);
@@ -2051,8 +2585,8 @@ fn ManagedObjectNew(comptime Builder: type) type {
             pub inline fn getStatic(
                 self: Self,
                 comptime field: @EnumLiteral(),
-                sdk: ManagedSdk,
                 scope: *Scope,
+                sdk: ManagedSdk,
             ) !ComptimeFieldType(field) {
                 @setRuntimeSafety(false);
                 return self.runtime.getStatic(field, sdk, scope);
@@ -2061,10 +2595,11 @@ fn ManagedObjectNew(comptime Builder: type) type {
             pub inline fn setStatic(
                 self: Self,
                 comptime field: @EnumLiteral(),
+                scope: *Scope,
                 sdk: ManagedSdk,
                 value: ComptimeFieldType(field),
             ) !void {
-                return self.runtime.setStatic(field, sdk, value);
+                return self.runtime.setStatic(field, scope, sdk, value);
             }
 
             pub const fullTypeName = Builder.fullTypeName;
@@ -2109,7 +2644,15 @@ fn ManagedObjectNew(comptime Builder: type) type {
         ) !Builder.GetMethod(method).RetType {
             const Method = Builder.GetMethod(method);
             const method_metadata = self.metadata.methods[Method.Id];
-            return scope.invokeMethod(null, method_metadata, Method.ParamInterops, Method.RetType, true, .fo(sdk), args);
+            return scope.invokeMethod(
+                null,
+                method_metadata,
+                Method.ParamInteropsTuple,
+                .{ .type = Method.RetType, .interop = Method.retInterop },
+                true,
+                .fo(sdk),
+                args,
+            );
         }
 
         pub fn getStatic(
@@ -2145,7 +2688,7 @@ fn ManagedObjectNew(comptime Builder: type) type {
         }
 
         fn getStaticRuntime() ?ManagedObjectType {
-            if (static_metadata.load(.acquire)) |metadata| {
+            if (cached_metadata.load(.acquire)) |metadata| {
                 return .{ .metadata = metadata };
             }
 
@@ -2173,31 +2716,26 @@ fn ManagedObjectNew(comptime Builder: type) type {
             var collected_methods = try std.ArrayList(*MethodMetadata).initCapacity(arena, Builder.MethodList.MethodsLen);
             defer collected_methods.deinit(arena);
 
-            var collected_fields = try std.ArrayList(*FieldMetadata).initCapacity(arena, Builder.FieldsLen);
+            var collected_fields = try std.ArrayList(*FieldMetadata).initCapacity(arena, Builder.FieldList.FieldsLen);
             defer collected_fields.deinit(arena);
             {
                 try cache.lock();
                 defer cache.unlock();
 
                 // getting existing cached type_def metadata...
-                const type_def_entry = try cache.type_def_map.getOrPut(arena, type_def);
-                if (!type_def_entry.found_existing) {
-                    const type_def_metadata = try arena.create(TypeDefMetadata);
-                    type_def_metadata.* = TypeDefMetadata.init(arena);
-                    type_def_entry.value_ptr.* = type_def_metadata;
-                }
+                const type_def_metdata = try cache.getOrCacheTypeDefMetadata(type_def);
 
                 // Checking methods
                 inline for (Builder.MethodList.Methods) |method_comptime_data| {
                     // TODO: Check param Types, Return Type for interoperability?
-                    const method_cache_entry = try type_def_entry.value_ptr.*.methods.getOrPut(method_comptime_data.Signature);
+                    const method_cache_entry = try type_def_metdata.*.methods.getOrPut(method_comptime_data.Signature);
                     if (method_cache_entry.found_existing) {
                         try collected_methods.append(arena, method_cache_entry.value_ptr.*);
                     } else {
                         // if we're removing on error, why not just not insert until we know it's valid?
                         // because it's a cold path, meaning these errors should happen rarely. otherwise,
                         // it's a user use case issue, they should be aware of what is available and what not.
-                        errdefer type_def_entry.value_ptr.*.methods.removeByPtr(method_cache_entry.key_ptr);
+                        errdefer type_def_metdata.*.methods.removeByPtr(method_cache_entry.key_ptr);
 
                         const method = type_def.findMethod(.fromOther(sdk), method_comptime_data.Signature) orelse {
                             cache.appendError("'" ++ method_comptime_data.Signature ++ "' was not found in '" ++ fullTypeName() ++ "'") catch {};
@@ -2218,11 +2756,11 @@ fn ManagedObjectNew(comptime Builder: type) type {
                 inline for (Builder.FieldList.Fields) |field_comptime_data| {
                     // TODO: Check field Types for interoperability.
                     const field_name = @tagName(field_comptime_data.Name);
-                    const field_cache_entry = try type_def_entry.value_ptr.*.fields.getOrPut(field_name);
+                    const field_cache_entry = try type_def_metdata.*.fields.getOrPut(field_name);
                     if (field_cache_entry.found_existing) {
                         try collected_fields.append(arena, field_cache_entry.value_ptr.*);
                     } else {
-                        errdefer type_def_entry.value_ptr.*.fields.removeByPtr(field_cache_entry.key_ptr);
+                        errdefer type_def_metdata.*.fields.removeByPtr(field_cache_entry.key_ptr);
 
                         const field_handle = type_def.findField(.fo(sdk), field_name) orelse {
                             cache.appendError("'" ++ field_name ++ "' was not found in '" ++ fullTypeName() ++ "'") catch {};
@@ -2250,32 +2788,137 @@ fn ManagedObjectNew(comptime Builder: type) type {
                 .methods = try collected_methods.toOwnedSlice(arena),
                 .fields = try collected_fields.toOwnedSlice(arena),
             };
-            static_metadata.store(metadata, .release);
-            return .{
-                .metadata = metadata,
-                .cache = cache,
-            };
+            cached_metadata.store(metadata, .release);
+            return .{ .metadata = metadata };
         }
     };
 }
 
-fn ManagedObjectField(
+pub fn ManagedObjectTypeBuilder(comptime full_type_name: [:0]const u8) type {
+    return ManagedObjectTypeBuilderImpl(full_type_name, ManagedObjectTypeBuilderFields(0, .{}), ManagedObjectTypeBuilderMethods(0, .{}));
+}
+
+fn ManagedObjectTypeBuilderImpl(comptime full_type_name: [:0]const u8, comptime NewFieldList: type, comptime NewMethodList: type) type {
+    return struct {
+        pub const FieldList: type = NewFieldList;
+        pub const MethodList: type = NewMethodList;
+
+        const Builder = @This();
+
+        fn GetField(comptime field: @EnumLiteral()) type {
+            for (0..FieldList.FieldsLen) |i| {
+                if (field == FieldList.Fields[i].Name) {
+                    return FieldList.Fields[i];
+                }
+            }
+            @compileError("No field decl was found with name: " ++ @tagName(field));
+        }
+
+        fn GetMethod(comptime method: @EnumLiteral()) type {
+            for (0..MethodList.MethodsLen) |i| {
+                if (method == MethodList.Methods[i].Tag) {
+                    return MethodList.Methods[i];
+                }
+            }
+            @compileError("No method decl was found with name: " ++ @tagName(method));
+        }
+
+        pub inline fn Build() type {
+            return ManagedObjectNew(@This()).Instance;
+        }
+
+        pub fn Field(
+            comptime field: @EnumLiteral(),
+            comptime T: type,
+            comptime get: ?ToZigInterop(T),
+            comptime set: ?FromZigInterop,
+        ) type {
+            var fields: [FieldList.FieldsLen + 1]type = undefined;
+            inline for (0..FieldList.FieldsLen) |i| {
+                fields[i] = FieldList.Fields[i];
+            }
+            fields[FieldList.FieldsLen] = ManagedObjectTypeField(
+                FieldList.FieldsLen,
+                field,
+                T,
+                get orelse defaultToZigInterop(T),
+                set orelse defaultFromZigInterop,
+            );
+            return ManagedObjectTypeBuilderImpl(full_type_name, ManagedObjectTypeBuilderFields(FieldList.FieldsLen + 1, fields), MethodList);
+        }
+
+        pub fn Method(
+            comptime tag: @EnumLiteral(),
+            comptime RetType: type,
+            comptime rInterop: ?ToZigInterop(RetType),
+        ) type {
+            var retInterop: ?ToZigInterop(RetType) = rInterop;
+            if (RetType == f32 and retInterop == null) {
+                // https://github.com/praydog/REFramework/blob/63dd83ead22bbab924b93bbd32e5be36d3a09a4d/src/mods/bindings/Sdk.cpp#L960
+                // TODO: Use type full name?
+                retInterop = struct {
+                    inline fn func(
+                        userdata: ?*anyopaque,
+                        scope: *Scope,
+                        from_type_def: api.sdk.TypeDefinition,
+                        data: *?*anyopaque,
+                    ) anyerror!RetType {
+                        return @floatCast(defaultToZigInterop(f64)(userdata, scope, from_type_def, data));
+                    }
+                }.func;
+            }
+
+            return ManagedObjectTypeMethodBuilder(@This(), MethodList.MethodsLen, null, tag, RetType, retInterop orelse defaultToZigInterop(RetType));
+        }
+
+        pub fn MethodWithName(
+            comptime name: [:0]const u8,
+            comptime tag: @EnumLiteral(),
+            comptime RetType: type,
+            comptime rInterop: ?ToZigInterop(RetType),
+        ) type {
+            var retInterop: ?ToZigInterop(RetType) = rInterop;
+            if (RetType == f32 and retInterop == null) {
+                // https://github.com/praydog/REFramework/blob/63dd83ead22bbab924b93bbd32e5be36d3a09a4d/src/mods/bindings/Sdk.cpp#L960
+                // TODO: Use type full name?
+                retInterop = struct {
+                    inline fn func(
+                        userdata: ?*anyopaque,
+                        scope: *Scope,
+                        from_type_def: api.sdk.TypeDefinition,
+                        data: *?*anyopaque,
+                    ) anyerror!RetType {
+                        return @floatCast(defaultToZigInterop(f64)(userdata, scope, from_type_def, data));
+                    }
+                }.func;
+            }
+
+            return ManagedObjectTypeMethodBuilder(@This(), MethodList.MethodsLen, name, tag, RetType, retInterop orelse defaultToZigInterop(RetType));
+        }
+
+        pub inline fn fullTypeName() [:0]const u8 {
+            return full_type_name;
+        }
+    };
+}
+
+fn ManagedObjectTypeField(
     comptime id: comptime_int,
     comptime field: @EnumLiteral(),
     comptime T: type,
-    comptime get: FromZigInterop,
-    comptime set: ToZigInterop(T),
+    comptime getInterop: ToZigInterop(T),
+    comptime setInterop: FromZigInterop,
 ) type {
     return struct {
         pub const Id = id;
         pub const Name: @EnumLiteral() = field;
         pub const Type: type = T;
-        comptime get: FromZigInterop = get,
-        comptime set: ToZigInterop(T) = set,
+        pub const get = getInterop;
+        pub const set = setInterop;
     };
 }
 
-fn ManagedObjectBuilderFields(comptime fields_len: comptime_int, comptime fields: [fields_len]type) type {
+fn ManagedObjectTypeBuilderFields(comptime fields_len: comptime_int, comptime fields: [fields_len]type) type {
     return struct {
         pub const FieldsLen: comptime_int = fields_len;
         pub const Fields: [fields_len]type = fields;
@@ -2293,9 +2936,28 @@ inline fn paramsInterops(
     return interops;
 }
 
-fn ManagedObjectMethod(
+inline fn ParamInteropsTupleType(
+    comptime params_len: comptime_int,
+) type {
+    var interop_types: [params_len]type = @splat(FromZigInterop);
+    return @Tuple(&interop_types);
+}
+
+inline fn paramInteropsTuple(
+    comptime params_len: comptime_int,
+    comptime params: [params_len]MethodParam,
+) ParamInteropsTupleType(params_len) {
+    var interops: ParamInteropsTupleType(params_len) = undefined;
+    for (0..params_len) |i| {
+        @field(interops, std.fmt.comptimePrint("{}", .{i})) = params[i].interop;
+    }
+    return interops;
+}
+
+fn ManagedObjectTypeMethod(
     comptime id: comptime_int,
-    comptime method: @EnumLiteral(),
+    comptime name: ?[:0]const u8,
+    comptime tag: @EnumLiteral(),
     comptime RType: type,
     comptime rInterop: ToZigInterop(RType),
     comptime params_len: comptime_int,
@@ -2303,161 +2965,171 @@ fn ManagedObjectMethod(
 ) type {
     return struct {
         pub const Id = id;
-        pub const Name: @EnumLiteral() = method;
+        pub const Name = name orelse @tagName(tag);
+        pub const Tag: @EnumLiteral() = tag;
         pub const RetType: type = RType;
         pub const retInterop: ToZigInterop(RetType) = rInterop;
         pub const Params: [params_len]MethodParam = params;
         pub const ParamInterops = paramsInterops(params_len, params);
-        pub const Signature = buildMethodSignatureParams(@tagName(Name), &Params);
+        pub const ParamInteropsTuple = paramInteropsTuple(params_len, params);
+        pub const Signature = buildMethodSignatureParams(Name, &Params);
     };
 }
 
-fn ManagedObjectBuilderMethods(comptime methods_len: comptime_int, comptime methods: [methods_len]type) type {
+fn ManagedObjectTypeBuilderMethods(comptime methods_len: comptime_int, comptime methods: [methods_len]type) type {
     return struct {
         pub const MethodsLen: comptime_int = methods_len;
         pub const Methods: [methods_len]type = methods;
     };
 }
 
-fn ManagedObjectBuilderImpl(comptime full_type_name: [:0]const u8, comptime NewFieldList: type, comptime NewMethodList: type) type {
+fn ManagedObjectTypeMethodBuilder(
+    comptime TypeBuilder: type,
+    comptime id: comptime_int,
+    comptime name: ?[:0]const u8,
+    comptime tag: @EnumLiteral(),
+    comptime RType: type,
+    comptime rInterop: ToZigInterop(RType),
+) type {
+    return ManagedObjectTypeMethodBuilderImpl(TypeBuilder, id, name, tag, RType, rInterop, 0, .{});
+}
+
+fn ManagedObjectTypeMethodBuilderImpl(
+    comptime TypeBuilder: type,
+    comptime id: comptime_int,
+    comptime name: ?[:0]const u8,
+    comptime tag: @EnumLiteral(),
+    comptime RetType: type,
+    comptime retInterop: ToZigInterop(RetType),
+    comptime params_len: comptime_int,
+    comptime params: [params_len]MethodParam,
+) type {
     return struct {
-        pub const FieldList: type = NewFieldList;
-        pub const MethodList: type = NewMethodList;
+        pub const ParamsLen = params_len;
+        pub const Params: [params_len]MethodParam = params;
 
-        fn GetField(comptime field: @EnumLiteral()) type {
-            if (FieldList == void) {
-                @compileError("No fields have been defined yet");
-            } else {
-                for (0..FieldList.FieldsLen) |i| {
-                    if (field == FieldList.Fields[i].Name) {
-                        return FieldList.Fields[i];
-                    }
-                }
-                @compileError("No field decl was found with name: " ++ @tagName(field));
-            }
-        }
-
-        fn GetMethod(comptime method: @EnumLiteral()) type {
-            if (MethodList == void) {
-                @compileError("No methods have been defined yet");
-            } else {
-                for (0..MethodList.MethodsLen) |i| {
-                    if (method == MethodList.Methods[i].Name) {
-                        return MethodList.Methods[i];
-                    }
-                }
-                @compileError("No method decl was found with name: " ++ @tagName(method));
-            }
-        }
-
+        /// Builds current "Method", adds it to the parent "Type Builder" and returns the built type.
         pub inline fn Build() type {
-            return ManagedObjectNew(@This()).Instance;
+            return BuildMethod().Build();
         }
 
-        pub fn Field(
+        /// Builds current "Method" and returns the type builder with the new method added, with
+        /// the new field added.
+        pub inline fn Field(
             comptime field: @EnumLiteral(),
             comptime T: type,
-            comptime get: ?FromZigInterop,
-            comptime set: ?ToZigInterop(T),
+            comptime get: ?ToZigInterop(T),
+            comptime set: ?FromZigInterop,
         ) type {
-            if (FieldList == void) {
-                return ManagedObjectBuilderImpl(full_type_name, ManagedObjectBuilderFields(1, .{
-                    ManagedObjectField(0, field, T, get orelse defaultFromZigInterop, set orelse defaultToZigInterop(T)),
-                }), MethodList);
-            } else {
-                var fields: [FieldList.FieldsLen + 1]type = undefined;
-                inline for (0..FieldList.FieldsLen) |i| {
-                    fields[i] = FieldList.Fields[i];
-                }
-                fields[FieldList.FieldsLen] = ManagedObjectField(FieldList.FieldsLen, field, T, get orelse defaultFromZigInterop, set orelse defaultToZigInterop(T));
-                return ManagedObjectBuilderImpl(full_type_name, ManagedObjectBuilderFields(FieldList.FieldsLen + 1, fields), MethodList);
-            }
+            return BuildMethod().Field(field, T, get, set);
         }
 
-        pub fn Method(
-            comptime method: @EnumLiteral(),
-            comptime RetType: type,
-            comptime retInteropOpt: ?ToZigInterop(RetType),
-            comptime params: anytype,
-        ) type {
-            const params_len = std.meta.fields(@TypeOf(params)).len;
-            var method_params: [params_len]MethodParam = undefined;
-            inline for (0..params_len) |i| {
-                const param = @field(params, std.fmt.comptimePrint("{d}", .{i}));
-                method_params[i] = .{
-                    .type_name = param.type_name,
-                    .type = param.type,
-                    .interop = if (@hasField(@TypeOf(param), "interop") and param.interop != null and param.interop != undefined)
-                        param.interop
-                    else
-                        defaultFromZigInterop,
-                };
-            }
-
-            var retInterop: ?ToZigInterop(RetType) = retInteropOpt;
-            if (RetType == f32 and retInterop == null) {
-                // https://github.com/praydog/REFramework/blob/63dd83ead22bbab924b93bbd32e5be36d3a09a4d/src/mods/bindings/Sdk.cpp#L960
-                // TODO: Use type full name?
-                retInterop = struct {
-                    inline fn func(
-                        userdata: ?*anyopaque,
-                        scope: *Scope,
-                        from_type_def: api.sdk.TypeDefinition,
-                        data: *?*anyopaque,
-                    ) anyerror!RetType {
-                        return @floatCast(defaultToZigInterop(f64)(userdata, scope, from_type_def, data));
-                    }
-                }.func;
-            }
-
-            if (MethodList == void) {
-                return ManagedObjectBuilderImpl(full_type_name, FieldList, ManagedObjectBuilderMethods(1, .{
-                    ManagedObjectMethod(0, method, RetType, retInterop orelse defaultToZigInterop(RetType), params_len, method_params),
-                }));
-            } else {
-                var methods: [MethodList.MethodsLen + 1]type = undefined;
-                inline for (0..MethodList.MethodsLen) |i| {
-                    methods[i] = MethodList.Methods[i];
+        /// Builds current "Method", adds it to the parent "Type Builder" and returns it.
+        fn BuildMethod() type {
+            var methods: [TypeBuilder.MethodList.MethodsLen + 1]type = undefined;
+            inline for (0..TypeBuilder.MethodList.MethodsLen) |i| {
+                methods[i] = TypeBuilder.MethodList.Methods[i];
+                if (methods[i].Tag == tag) {
+                    @compileError("Method with tag: " ++ @tagName(tag) ++ " was already defined, use MethodBuilderWithName, " ++
+                        "provide a unique tag but provide the name as current tag's str literal.");
                 }
-                methods[MethodList.MethodsLen] = ManagedObjectMethod(MethodList.MethodsLen, method, RetType, retInterop orelse defaultToZigInterop(RetType), params_len, method_params);
-                return ManagedObjectBuilderImpl(full_type_name, FieldList, ManagedObjectBuilderMethods(MethodList.MethodsLen + 1, methods));
             }
+            methods[TypeBuilder.MethodList.MethodsLen] = ManagedObjectTypeMethod(
+                id,
+                name,
+                tag,
+                RetType,
+                retInterop,
+                ParamsLen,
+                Params,
+            );
+            return ManagedObjectTypeBuilderImpl(
+                TypeBuilder.fullTypeName(),
+                TypeBuilder.FieldList,
+                ManagedObjectTypeBuilderMethods(TypeBuilder.MethodList.MethodsLen + 1, methods),
+            );
         }
 
-        pub fn Type() type {}
+        /// Adds a param to current "Method" and returns the "Method Builder" with the new param added.
+        pub fn Param(type_name: ?[:0]const u8, T: type, interop: ?FromZigInterop) type {
+            var new_params: [ParamsLen + 1]MethodParam = undefined;
+            inline for (0..ParamsLen) |i| {
+                new_params[i] = Params[i];
+            }
+            new_params[ParamsLen] = .{
+                .type_name = type_name,
+                .type = T,
+                .interop = if (interop != null and interop != undefined)
+                    interop
+                else
+                    defaultFromZigInterop,
+            };
+            return ManagedObjectTypeMethodBuilderImpl(TypeBuilder, id, name, tag, RetType, retInterop, ParamsLen + 1, new_params);
+        }
 
-        pub inline fn fullTypeName() [:0]const u8 {
-            return full_type_name;
+        /// Builds current "Method" and returns a new "Method Builder"
+        pub inline fn Method(
+            comptime new_tag: @EnumLiteral(),
+            comptime NewRetType: type,
+            comptime newRetInterop: ?ToZigInterop(NewRetType),
+        ) type {
+            return BuildMethod().Method(new_tag, NewRetType, newRetInterop);
+        }
+
+        /// Builds current "Method" and returns a new "Method Builder"
+        pub inline fn MethodWithName(
+            comptime new_name: [:0]const u8,
+            comptime new_tag: @EnumLiteral(),
+            comptime NewRetType: type,
+            comptime newRetInterop: ?ToZigInterop(NewRetType),
+        ) type {
+            return BuildMethod().MethodWithName(new_name, new_tag, NewRetType, newRetInterop);
         }
     };
 }
 
-pub fn ManagedObjectBuilder(comptime full_type_name: [:0]const u8) type {
-    return ManagedObjectBuilderImpl(full_type_name, void, void);
-}
-
 test "builder" {
-    const FooBuilder = ManagedObjectBuilder("app.foo")
+    const FooBuilder = ManagedObjectTypeBuilder("app.foo")
         .Field(.Test, i32, null, null)
         .Field(.Test2, f32, null, null)
-        .Method(.TestMethod, void, null, .{})
-        .Method(.TestMethod2, void, null, .{
-        .{ .type_name = "System.Int32", .type = i32, .interop = null },
-        .{ .type_name = "System.Int32", .type = i32, .interop = null },
-    });
+        .Method(.TestMethod, void, null)
+        .Method(.TestMethod2, void, null)
+        .Param("System.Int32", i32, null)
+        .Param("System.Int32", i32, null)
+        .BuildMethod();
+
     try std.testing.expect(comptime FooBuilder.FieldList.FieldsLen == 2);
     try std.testing.expect(comptime FooBuilder.FieldList.Fields[0].Type == i32);
     try std.testing.expectEqualStrings("Test", @tagName(FooBuilder.FieldList.Fields[0].Name));
     try std.testing.expectEqualStrings("Test2", @tagName(FooBuilder.FieldList.Fields[1].Name));
-    try std.testing.expectEqualStrings("TestMethod", @tagName(FooBuilder.MethodList.Methods[0].Name));
+    try std.testing.expectEqualStrings("TestMethod", FooBuilder.MethodList.Methods[0].Name);
     try std.testing.expect(comptime FooBuilder.MethodList.Methods[0].RetType == void);
-    try std.testing.expectEqualStrings("TestMethod2", @tagName(FooBuilder.MethodList.Methods[1].Name));
+    try std.testing.expectEqualStrings("TestMethod2", FooBuilder.MethodList.Methods[1].Name);
     try std.testing.expectEqualStrings("TestMethod2(System.Int32, System.Int32)", FooBuilder.MethodList.Methods[1].Signature);
     try std.testing.expect(comptime FooBuilder.MethodList.Methods[1].Params[0].type == i32);
     try std.testing.expect(comptime FooBuilder.MethodList.Methods[1].Params[1].type == i32);
 
     const Foo = FooBuilder.Build();
-    try std.testing.expectEqual(std.hash_map.hashString("app.foo"), Foo.Runtime.type_name_hash);
+    try std.testing.expectEqual(std.hash_map.hashString("app.foo"), std.hash_map.hashString(Foo.Runtime.fullTypeName()));
+
+    const FooT = struct {
+        fn func(comptime name: [:0]const u8) type {
+            return struct {
+                pub const Name = name;
+                pub fn GetNameStruct() type {
+                    return struct {
+                        pub const type_name = name;
+                        pub const Type = void;
+                    };
+                }
+            };
+        }
+    }.func;
+
+    const Foo1 = FooT("Bar").GetNameStruct();
+    const Foo2 = FooT("Bar").GetNameStruct();
+
+    try std.testing.expect(comptime Foo1 == Foo2);
 }
 
 test "basic" {
@@ -2475,12 +3147,14 @@ test "basic" {
 
     try std.testing.expect(comptime @TypeOf(Foo) == type);
 
-    var dummy_cache: ManagedTypeCache = .init(std.testing.allocator, std.testing.allocator, std.testing.io);
+    var dummy_cache: ManagedTypeCache = .init(std.testing.allocator, std.testing.io);
     var dummy_sdk: ManagedSdk = undefined;
     const dummy_typedef: api.sdk.TypeDefinition = undefined;
     var dummy_data: ?*anyopaque = null;
+    var scope = dummy_cache.newScope(std.testing.allocator);
+    defer scope.deinit();
     {
-        const res = try defaultToZigInterop(void)(&dummy_sdk, &dummy_cache, dummy_typedef, &dummy_data);
+        const res = try defaultToZigInterop(void)(&dummy_sdk, &scope, dummy_typedef, &dummy_data);
         try std.testing.expect(comptime @TypeOf(res) == void);
     }
 
@@ -2490,7 +3164,7 @@ test "basic" {
         invoke_res.bytes[0] = 69;
         const res = try defaultToZigInterop(u8)(
             &dummy_sdk,
-            &dummy_cache,
+            &scope,
             dummy_typedef,
             @ptrCast(@alignCast(&invoke_res.bytes[0])),
         );
@@ -2500,7 +3174,7 @@ test "basic" {
     {
         @setRuntimeSafety(false);
         var arg: u32 = undefined;
-        try defaultFromZigInterop(&dummy_sdk, &dummy_cache, dummy_typedef, 420, @ptrCast(@alignCast(&arg)));
+        try defaultFromZigInterop(&dummy_sdk, &scope, dummy_typedef, 420, @ptrCast(@alignCast(&arg)));
         try std.testing.expectEqual(420, arg);
     }
 }

@@ -2,28 +2,19 @@ const re = @import("reframework");
 
 const interop = re.interop;
 
-pub const SystemArray = interop.ManagedObject("System.Array", .{
-    .GetLength = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-        .ret = .{ .type = i32 },
-    },
-    .GetValue = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-        .ret = .{ .type = ?re.api.sdk.ManagedObject },
-    },
-    .SetValue = .{
-        .params = .{
-            // The signature becomes only the method name, no param type is included.
-            .{ .type_name = null, .type = re.api.sdk.ManagedObject },
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-        .ret = .{ .type = void },
-    },
-}, .{});
+pub const SystemArray = interop.ManagedObjectTypeBuilder("System.Array")
+    .Method(.GetLength, i32, null)
+    .Param("System.Int32", i32, null)
+    // Previous method gets added to "Type Builder".
+    .MethodWithName("GetValue", .GetValue, ?re.api.sdk.ManagedObject, null)
+    .Param("System.Int32", i32, null)
+    // Previous method gets added to "Type Builder".
+    .Method(.SetValue, void, null)
+    // type name as null means the param type is not included in the method signature,
+    // so only the method name is used for method resolution.
+    .Param(null, re.api.sdk.ManagedObject, null)
+    .Param("System.Int32", i32, null)
+    .Build(); // Type built, not the method.
 
 pub const SaveSlotSegmentType = enum(c_int) {
     invalid = 0,
@@ -43,23 +34,19 @@ pub const SaveSlotCategory = enum(c_int) {
     userdefine_game_3 = 9,
 };
 
-pub const SaveSlotPartition = interop.ManagedObject("app.SaveSlotPartition", .{}, .{
-    ._Usage = .{ .type = SaveSlotCategory },
-    ._HeadSlotId = .{ .type = i32 },
-    ._SlotCount = .{ .type = i32 },
-});
+pub const SaveSlotPartition = interop.ManagedObjectTypeBuilder("app.SaveSlotPartition")
+    .Field(._Usage, SaveSlotCategory, null, null)
+    .Field(._HeadSlotId, i32, null, null)
+    .Field(._SlotCount, i32, null, null)
+    .Build();
 
-pub const GuiSaveLoadControllerUnit = interop.ManagedObject("app.GuiSaveLoadController.Unit", .{}, .{
-    ._SaveItemNum = .{ .type = i32 },
-});
+pub const GuiSaveLoadControllerUnit = interop.ManagedObjectTypeBuilder("app.GuiSaveLoadController.Unit")
+    .Field(._SaveItemNum, i32, null, null)
+    .Build();
 
-pub const GuiSaveDataInfo = interop.ManagedObject("app.GuiSaveDataInfo", .{}, .{});
-pub const GuiSaveLoadModel = interop.ManagedObject("app.GuiSaveLoadModel", .{
-    .makeSaveData = .{
-        .params = .{
-            .{ .type_name = "app.SaveSlotCategory", .type = SaveSlotCategory },
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-        .ret = .{ .type = ?GuiSaveDataInfo },
-    },
-}, .{});
+pub const GuiSaveDataInfo = interop.ManagedObjectTypeBuilder("app.GuiSaveDataInfo").Build();
+pub const GuiSaveLoadModel = interop.ManagedObjectTypeBuilder("app.GuiSaveLoadModel")
+    .Method(.makeSaveData, ?GuiSaveDataInfo, null)
+    .Param("app.SaveSlotCategory", SaveSlotCategory, null)
+    .Param("System.Int32", i32, null)
+    .Build(); // Type built, not the method.

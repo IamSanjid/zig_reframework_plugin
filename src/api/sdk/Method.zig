@@ -37,26 +37,17 @@ pub const Method = extern struct {
         sdk: Verified(API.REFrameworkSDKData, .{ .method = .invoke }),
         thisptr: ?*anyopaque,
         args: []?*anyopaque,
-    ) REFrameworkError!InvokeRet {
-        var out: InvokeRet = .{};
+        out: *InvokeRet,
+    ) REFrameworkError!void {
         const result = sdk.safe().method.safe().invoke(
             self.handle(),
             thisptr,
             if (args.len == 0) null else @ptrCast(args.ptr),
             @intCast(args.len * @sizeOf(?*anyopaque)),
-            &out,
+            out,
             @sizeOf(InvokeRet),
         );
         try re_error.mapResult(result);
-        return out;
-    }
-
-    pub inline fn invokeNoArgs(
-        self: Self,
-        sdk: Verified(API.REFrameworkSDKData, .{ .method = .invoke }),
-        thisptr: ?*anyopaque,
-    ) REFrameworkError!InvokeRet {
-        return self.invoke(sdk, thisptr, &.{});
     }
 
     pub inline fn getFunctionRaw(self: Self, sdk: Verified(API.REFrameworkSDKData, .{ .method = .get_function })) ?*anyopaque {
