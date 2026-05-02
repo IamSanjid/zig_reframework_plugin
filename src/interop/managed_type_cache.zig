@@ -52,19 +52,6 @@ pub const ManagedTypeCache = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // {
-        //     var values_iter = self.type_def_map.valueIterator();
-        //     while (values_iter.next()) |metadata| {
-        //         var methods = metadata.methods.valueIterator();
-        //         while (methods.next()) |method| {
-        //             method.deinit(self.cache_arena);
-        //         }
-
-        //         metadata.methods.deinit();
-        //         metadata.fields.deinit();
-        //     }
-        // }
-
         self.type_def_map.deinit(self.cache_arena.allocator());
         self.diagnostics.deinit(self.value_arena.allocator());
 
@@ -145,12 +132,12 @@ pub const ManagedTypeCache = struct {
 };
 
 pub fn getOrCacheTypeDefMetadata(
-    self: *ManagedTypeCache,
+    type_cache: *ManagedTypeCache,
     type_def: api.sdk.TypeDefinition,
 ) !*TypeDefMetadata {
-    const arena = self.cache_arena.allocator();
+    const arena = type_cache.cache_arena.allocator();
 
-    const type_def_entry = try self.type_def_map.getOrPut(arena, type_def);
+    const type_def_entry = try type_cache.type_def_map.getOrPut(arena, type_def);
     if (!type_def_entry.found_existing) {
         const type_def_metadata = try arena.create(TypeDefMetadata);
         type_def_metadata.* = TypeDefMetadata.init(arena, type_def);
@@ -161,7 +148,7 @@ pub fn getOrCacheTypeDefMetadata(
 }
 
 pub fn getOrCacheMethodMetadataTo(
-    self: *ManagedTypeCache,
+    type_cache: *ManagedTypeCache,
     type_def_metadata: *TypeDefMetadata,
     sig: [:0]const u8,
     sdk: api.VerifiedSdk(.{
@@ -169,7 +156,7 @@ pub fn getOrCacheMethodMetadataTo(
         .type_definition = .all,
     }),
 ) !*MethodMetadata {
-    const arena = self.cache_arena.allocator();
+    const arena = type_cache.cache_arena.allocator();
 
     const method_sig = sig;
 
@@ -196,7 +183,7 @@ pub fn getOrCacheMethodMetadataTo(
 }
 
 pub fn getOrCacheFieldMetadataTo(
-    self: *ManagedTypeCache,
+    type_cache: *ManagedTypeCache,
     type_def_metadata: *TypeDefMetadata,
     field_name: [:0]const u8,
     sdk: api.VerifiedSdk(.{
@@ -204,7 +191,7 @@ pub fn getOrCacheFieldMetadataTo(
         .type_definition = .all,
     }),
 ) !*FieldMetadata {
-    const arena = self.cache_arena.allocator();
+    const arena = type_cache.cache_arena.allocator();
 
     const field_cache_entry = try type_def_metadata.*.fields.getOrPut(field_name);
 

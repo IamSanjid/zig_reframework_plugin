@@ -111,8 +111,8 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
 
     var items_local_id: i32 = 0;
 
-    var iter = try g.items.iteratorAll(&u.scope.?);
-    defer iter.deinit();
+    var iter = try g.items.iterator(&u.scope.?);
+    defer u.scope.?.reset();
     while (try iter.next()) |item| {
         if (u.current_category) |selected| {
             if (item.category.raw != selected.raw) {

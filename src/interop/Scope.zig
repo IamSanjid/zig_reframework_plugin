@@ -106,13 +106,55 @@ pub fn invokeMethod(
     }
 }
 
-pub fn readField(
+fn fieldPtr(
     self: *Scope,
-    obj: ?*anyopaque,
+    obj: *anyopaque,
+    field_metadata: *FieldMetadata,
+    sdk: api.VerifiedSdk(.{ .field = .get_data_raw }),
+    is_obj_valtype: bool,
+) !*?*anyopaque {
+    @setRuntimeSafety(false);
+
+    if (field_metadata.offset == m.invalid_offset) {
+        @branchHint(.cold);
+        try self.cache.lock();
+        defer self.cache.unlock();
+
+        const data_read_ptr: *?*anyopaque = @ptrCast(@alignCast(field_metadata.handle.getDataRaw(
+            .fo(sdk),
+            obj,
+            is_obj_valtype,
+        )));
+
+        field_metadata.offset = @intFromPtr(data_read_ptr) - @intFromPtr(obj);
+        return data_read_ptr;
+    } else {
+        return @ptrFromInt(@intFromPtr(obj) + field_metadata.offset);
+    }
+}
+
+pub inline fn readField(
+    self: *Scope,
+    obj: *anyopaque,
     field_metadata: *FieldMetadata,
     comptime T: type,
     comptime interop: ?ToZigInterop(T),
     is_obj_valtype: bool,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+    }),
+) !T {
+    const data_read_ptr: *?*anyopaque = try self.fieldPtr(obj, field_metadata, .fo(sdk), is_obj_valtype);
+    const getInterop = interop orelse defaultToZigInterop(T);
+    return getInterop(&sdk, self, field_metadata.type_def, data_read_ptr);
+}
+
+pub fn readStaticField(
+    self: *Scope,
+    field_metadata: *FieldMetadata,
+    comptime T: type,
+    comptime interop: ?ToZigInterop(T),
     sdk: api.VerifiedSdk(.{
         .field = field_specs,
         .type_definition = .all,
@@ -124,21 +166,35 @@ pub fn readField(
 
     const data_read_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
         .fo(sdk),
-        obj,
-        is_obj_valtype,
+        null,
+        false,
     )));
 
     const getInterop = interop orelse defaultToZigInterop(T);
     return getInterop(&sdk, self, field_metadata.type_def, data_read_ptr);
 }
 
-pub fn writeField(
+pub inline fn writeField(
     self: *Scope,
-    obj: ?*anyopaque,
+    obj: *anyopaque,
     field_metadata: *FieldMetadata,
     comptime interop: ?FromZigInterop,
     is_obj_valtype: bool,
-    comptime static: bool,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+    }),
+    value: anytype,
+) !void {
+    const data_write_ptr: *?*anyopaque = try self.fieldPtr(obj, field_metadata, .fo(sdk), is_obj_valtype);
+    const setInterop = interop orelse defaultFromZigInterop;
+    return setInterop(&sdk, self, field_metadata.type_def, value, data_write_ptr);
+}
+
+pub fn writeStaticField(
+    self: *Scope,
+    field_metadata: *FieldMetadata,
+    comptime interop: ?FromZigInterop,
     sdk: api.VerifiedSdk(.{
         .field = field_specs,
         .type_definition = .all,
@@ -146,30 +202,25 @@ pub fn writeField(
     value: anytype,
 ) !void {
     @setRuntimeSafety(false);
-
     const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
-
     const field_handle = field_metadata.handle;
-
-    if (comptime static) {
-        if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
-            return error.RequiresInstance;
-        }
+    if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
+        return error.RequiresInstance;
     }
 
     const data_write_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
         .fo(sdk),
-        obj,
-        is_obj_valtype,
+        null,
+        false,
     )));
 
     const setInterop = interop orelse defaultFromZigInterop;
     return setInterop(&sdk, self, field_metadata.type_def, value, data_write_ptr);
 }
 
-pub fn getFieldFromTypeDef(
+pub inline fn getFieldFromTypeDef(
     self: *Scope,
-    obj: ?*anyopaque,
+    obj: *anyopaque,
     type_def: api.sdk.TypeDefinition,
     field_name: [:0]const u8,
     comptime T: type,
@@ -181,9 +232,7 @@ pub fn getFieldFromTypeDef(
     }),
 ) !T {
     const field_metadata = try self.cache.getOrCacheFieldMetadata(.fo(sdk), type_def, field_name);
-
     const is_passed_type_valtype = type_def.getVmObjType(.fo(sdk)) == .valtype;
-
     return self.readField(
         obj,
         field_metadata,
@@ -194,35 +243,66 @@ pub fn getFieldFromTypeDef(
     );
 }
 
-pub fn setFieldFromTypeDef(
+pub inline fn getStaticFieldFromTypeDef(
     self: *Scope,
-    obj: ?*anyopaque,
+    type_def: api.sdk.TypeDefinition,
+    field_name: [:0]const u8,
+    comptime T: type,
+    comptime interop: ?ToZigInterop(T),
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+    }),
+) !T {
+    const field_metadata = try self.cache.getOrCacheFieldMetadata(.fo(sdk), type_def, field_name);
+    return self.readStaticField(
+        field_metadata,
+        T,
+        interop,
+        .fo(sdk),
+    );
+}
+
+pub inline fn setFieldFromTypeDef(
+    self: *Scope,
+    obj: *anyopaque,
     type_def: api.sdk.TypeDefinition,
     field_name: [:0]const u8,
     comptime interop: ?FromZigInterop,
     comptime passed_managed_obj: bool,
-    comptime static: bool,
     sdk: api.VerifiedSdk(.{
         .field = field_specs,
         .type_definition = .all,
     }),
     value: anytype,
 ) !void {
-    // const field = comptime if (@TypeOf(field_data) == @EnumLiteral()) .{
-    //     .name = @tagName(field_data),
-    // } else field_data;
-    // const FieldT = @TypeOf(field);
-
     const field_metadata = try self.cache.getOrCacheFieldMetadata(.fo(sdk), type_def, field_name);
-
     const is_passed_type_valtype = type_def.getVmObjType(.fo(sdk)) == .valtype;
-
     return self.writeField(
         obj,
         field_metadata,
         interop,
         is_passed_type_valtype and !passed_managed_obj,
-        static,
+        .fo(sdk),
+        value,
+    );
+}
+
+pub inline fn setStaticFieldFromTypeDef(
+    self: *Scope,
+    type_def: api.sdk.TypeDefinition,
+    field_name: [:0]const u8,
+    comptime interop: ?FromZigInterop,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+    }),
+    value: anytype,
+) !void {
+    const field_metadata = try self.cache.getOrCacheFieldMetadata(.fo(sdk), type_def, field_name);
+    return self.writeStaticField(
+        field_metadata,
+        interop,
         .fo(sdk),
         value,
     );
@@ -386,7 +466,7 @@ pub inline fn getStaticFieldWithInterop(
 ) !T {
     const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
     const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
-    return try self.getFieldFromTypeDef(null, type_def, field_name, T, interop, false, .fo(sdk));
+    return try self.getStaticFieldFromTypeDef(type_def, field_name, T, interop, .fo(sdk));
 }
 
 pub inline fn setField(
@@ -416,7 +496,7 @@ pub inline fn setFieldWithInterop(
     value: anytype,
 ) !void {
     const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
-    return try self.setFieldFromTypeDef(managed.raw, type_def, field_name, interop, true, false, .fo(sdk), value);
+    return try self.setFieldFromTypeDef(managed.raw, type_def, field_name, interop, true, .fo(sdk), value);
 }
 
 pub inline fn setStaticField(
@@ -449,64 +529,7 @@ pub inline fn setStaticFieldWithInterop(
 ) !void {
     const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
     const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
-    return try self.setFieldFromTypeDef(null, type_def, field_name, interop, false, true, .fo(sdk), value);
+    return try self.setStaticFieldFromTypeDef(type_def, field_name, interop, .fo(sdk), value);
 }
 
-fn buildMethodArgsImpl(
-    sdk: *const anyopaque,
-    scope: *Scope,
-    method_metadata: *const MethodMetadata,
-    args: anytype,
-    comptime param_interops: [std.meta.fields(@TypeOf(args)).len]FromZigInterop,
-) anyerror![std.meta.fields(@TypeOf(args)).len]?*anyopaque {
-    @setRuntimeSafety(false);
-
-    const args_len = std.meta.fields(@TypeOf(args)).len;
-    var out: [args_len]?*anyopaque = undefined;
-
-    inline for (0..args_len) |i| {
-        const arg = @field(args, std.fmt.comptimePrint("{d}", .{i}));
-        if (@TypeOf(arg) == ValueType) {
-            out[i] = arg.valuePtr();
-        } else {
-            try param_interops[i](
-                sdk,
-                scope,
-                method_metadata.param_type_defs[i],
-                arg,
-                &out[i],
-            );
-        }
-    }
-
-    return out;
-}
-
-pub inline fn buildMethodArgs(
-    sdk: *const anyopaque,
-    scope: *Scope,
-    method_metadata: *const MethodMetadata,
-    args: anytype,
-    comptime param_interops: anytype,
-) anyerror![std.meta.fields(@TypeOf(args)).len]?*anyopaque {
-    const ParamInteropsT = @TypeOf(param_interops);
-    const param_interops_len = comptime std.meta.fields(ParamInteropsT).len;
-    const args_len = comptime std.meta.fields(@TypeOf(args)).len;
-    if (param_interops_len > 0 and param_interops_len != args_len) {
-        @compileError("param_interops len has to match the args length or has to be 0 or .{}");
-    }
-
-    comptime var param_interop_fns: [args_len]FromZigInterop = undefined;
-    if (param_interops_len > 0) {
-        inline for (0..args_len) |i| {
-            const arg_index_str = std.fmt.comptimePrint("{d}", .{i});
-            param_interop_fns[i] = @field(param_interops, arg_index_str);
-        }
-    } else {
-        inline for (0..args_len) |i| {
-            param_interop_fns[i] = defaultFromZigInterop;
-        }
-    }
-
-    return buildMethodArgsImpl(sdk, scope, method_metadata, args, param_interop_fns);
-}
+pub const buildMethodArgs = in.buildMethodArgs;

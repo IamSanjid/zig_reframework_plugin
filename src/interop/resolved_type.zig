@@ -62,7 +62,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                 ValueType => {
                     return obj.valuePtr();
                 },
-                else => return null,
+                else => {},
             }
 
             if (isManagedInterop(ObjType)) {
@@ -92,8 +92,26 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
             }
         }
 
-        fn getObjDetectManaged(obj: anytype) struct { ?*anyopaque, bool } {
+        fn getObjDetectManaged(obj: anytype) struct { *anyopaque, bool } {
             const ObjType = @TypeOf(obj);
+
+            switch (ObjType) {
+                api.sdk.ManagedObject => {
+                    return .{ obj.raw, true };
+                },
+                *api.sdk.ManagedObject => {
+                    return .{ obj.*.raw, true };
+                },
+                ValueType => {
+                    return .{ obj.valuePtr(), false };
+                },
+                else => {},
+            }
+
+            if (isManagedInterop(ObjType)) {
+                return .{ obj.managed.raw, true };
+            }
+
             const isManagedObj = struct {
                 inline fn func(comptime T: type) bool {
                     return isManagedInterop(T) or
@@ -102,23 +120,24 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                 }
             }.func;
             if (isManagedObj(ObjType)) {
-                return .{ getObj(obj), true };
+                return .{ obj.managed.raw, true };
             }
 
             const obj_type_info = @typeInfo(ObjType);
             switch (obj_type_info) {
                 .pointer => |p| {
-                    return .{ getObj(obj), isManagedObj(p.child) };
-                },
-                .optional => |o| {
-                    if (o) |val| {
-                        return getObjDetectManaged(val);
-                    } else {
-                        return .{ null, isManagedObj(o.child) };
-                    }
+                    return .{
+                        if (p.child == ValueType)
+                            return obj.valuePtr()
+                        else if (isManagedInterop(p.child))
+                            obj.managed.raw
+                        else
+                            @ptrCast(@alignCast(obj)),
+                        isManagedObj(p.child),
+                    };
                 },
                 else => {
-                    return .{ getObj(obj), false };
+                    @compileError("Concrete obj required!");
                 },
             }
         }
@@ -359,16 +378,21 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                 }),
             ) !T {
                 const Static = Field(@tagName(field), static);
-                const field_metadata = (try Static.getMetadata(self.scope, self.type_def_metadata, .fo(sdk))).@"0";
+                const field_metadata, const is_passed_type_valtype = try Static.getMetadata(self.scope, self.type_def_metadata, .fo(sdk));
 
-                return self.scope.readField(
-                    getObj(obj),
-                    field_metadata,
-                    T,
-                    interop,
-                    static,
-                    .fo(sdk),
-                );
+                if (comptime static) {
+                    return self.scope.readStaticField(field_metadata, interop, .fo(sdk));
+                } else {
+                    const obj_val, const passed_managed_obj = getObjDetectManaged(obj);
+                    return self.scope.readField(
+                        obj_val,
+                        field_metadata,
+                        T,
+                        interop,
+                        is_passed_type_valtype and !passed_managed_obj,
+                        .fo(sdk),
+                    );
+                }
             }
 
             pub inline fn get(
@@ -443,16 +467,19 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                 const Static = Field(@tagName(field), static);
                 const field_metadata, const is_passed_type_valtype = try Static.getMetadata(self.scope, self.type_def_metadata, .fo(sdk));
 
-                const obj_val, const passed_managed_obj = getObjDetectManaged(obj);
-                return self.scope.writeField(
-                    obj_val,
-                    field_metadata,
-                    interop,
-                    is_passed_type_valtype and !passed_managed_obj,
-                    static,
-                    .fo(sdk),
-                    value,
-                );
+                if (comptime static) {
+                    return self.scope.writeStaticField(field_metadata, interop, .fo(sdk));
+                } else {
+                    const obj_val, const passed_managed_obj = getObjDetectManaged(obj);
+                    return self.scope.writeField(
+                        obj_val,
+                        field_metadata,
+                        interop,
+                        is_passed_type_valtype and !passed_managed_obj,
+                        .fo(sdk),
+                        value,
+                    );
+                }
             }
 
             pub inline fn set(

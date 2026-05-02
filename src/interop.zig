@@ -69,13 +69,13 @@ pub const ValueType = struct {
         return .{ .raw = @ptrCast(@alignCast(&self.data[0])) };
     }
 
-    pub inline fn valuePtr(self: Self) ?*anyopaque {
+    pub inline fn valuePtr(self: Self) *anyopaque {
         return @ptrCast(@alignCast(&self.data[managed_object_runtime_size]));
     }
 
     pub inline fn call(
         self: Self,
-        comptime sig: [:0]const u8,
+        sig: [:0]const u8,
         comptime param_interops: anytype,
         comptime ret: anytype,
         scope: *Scope,
@@ -136,7 +136,6 @@ pub const ValueType = struct {
             self.type_def,
             field_name,
             defaultFromZigInterop,
-            false,
             false,
             .fo(sdk),
             value,

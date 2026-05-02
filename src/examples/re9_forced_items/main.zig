@@ -99,59 +99,83 @@ pub const g = struct {
         _ = debug_allocator.detectLeaks();
         _ = debug_allocator.deinit();
     }
+
+    pub inline fn errorInSafeMode(cond: bool, err: anytype) !void {
+        const mode = @import("builtin").mode;
+        if (comptime mode == .Debug or mode == .ReleaseSafe) {
+            if (!cond) {
+                return err;
+            }
+        }
+    }
 };
 
 pub const Items = struct {
-    categories: std.AutoHashMap(ItemCategory, [:0]const u8),
-    items_cache: std.AutoHashMap(ItemId, ItemDetails),
     manager: *ItemManager,
+    arena: std.heap.ArenaAllocator,
+    categories: std.AutoHashMapUnmanaged(ItemCategory, [:0]const u8) = .empty,
+    items_cache: Cache = .empty,
     last_version: i32 = 0,
 
-    pub const IteratorAll = struct {
+    const Cache = std.AutoHashMapUnmanaged(ItemId, ItemDetails);
+
+    pub const IteratorEntries = struct {
         owner: *Items,
         scope: *interop.Scope,
         entries: interop.SystemArrayEntries,
-        count: u32,
         next_idx: u32 = 0,
 
-        const Entry = extern struct {
-            hash_code: i32,
-            next: i32,
-            key: ItemId,
-            kvp: re.sdk.ManagedObject,
-        };
-        comptime {
-            std.debug.assert(@offsetOf(Entry, "key") == 0x08);
-        }
-
-        pub fn next(self: *IteratorAll) !?ItemDetails {
+        pub fn next(self: *IteratorEntries) !?ItemDetails {
             @setRuntimeSafety(false);
-            if (self.next_idx >= self.count) return null;
+            if (self.next_idx >= self.entries.len) return null;
 
             const element_size = self.entries.contained_type_def.getValueTypeSize(.fo(g.sdk));
-            if (element_size != @sizeOf(Entry)) {
-                return error.UnexpectedEntrySize;
-            }
 
-            while (self.next_idx < self.count) {
+            while (self.next_idx < self.entries.len) {
                 defer self.next_idx += 1;
 
                 const entry_ptr_usize = @intFromPtr(self.entries.ptr) + (self.next_idx * element_size);
-                const entry: *Entry = @ptrFromInt(entry_ptr_usize);
 
-                const id: ItemId = entry.key;
+                const hash_code = self.scope.getFieldFromTypeDef(
+                    @ptrFromInt(entry_ptr_usize),
+                    self.entries.contained_type_def,
+                    "hashCode",
+                    u32,
+                    null,
+                    false,
+                    .fo(g.sdk),
+                ) catch continue;
+                if (hash_code == 0) continue;
 
-                const item_entry = self.owner.items_cache.getOrPut(id) catch continue;
+                const id = self.scope.getFieldFromTypeDef(
+                    @ptrFromInt(entry_ptr_usize),
+                    self.entries.contained_type_def,
+                    "key",
+                    ItemId,
+                    null,
+                    false,
+                    .fo(g.sdk),
+                ) catch continue;
+
+                const arena = self.owner.arena.allocator();
+
+                const item_entry = self.owner.items_cache.getOrPut(arena, id) catch continue;
                 if (item_entry.found_existing) {
                     return item_entry.value_ptr.*;
                 } else {
-                    const kvp = entry.kvp;
-                    // Don't know the typename of the kvp, since its not a hot path, we can afford to do
-                    // extra lookups.
+                    const kvp = self.scope.getFieldFromTypeDef(
+                        @ptrFromInt(entry_ptr_usize),
+                        self.entries.contained_type_def,
+                        "value",
+                        re.sdk.ManagedObject,
+                        null,
+                        false,
+                        .fo(g.sdk),
+                    ) catch continue;
                     const item_detail = self.scope.getField(kvp, "_Value", ItemDetailData, .fo(g.sdk)) catch continue;
                     const item_category = item_detail.get(._ItemCategory, self.scope, .fo(g.sdk)) catch continue;
 
-                    // arena allocated ValueType, reset on deinit
+                    // Scope arena allocated ValueType, scope resets it when its needed.
                     const name_message_id = item_detail.get(._NameMessageId, self.scope, .fo(g.sdk)) catch continue;
                     const caption_message_id = item_detail.get(._CaptionMessageId, self.scope, .fo(g.sdk)) catch continue;
 
@@ -172,12 +196,12 @@ pub const Items = struct {
                         .{caption_message_id},
                     ) catch continue;
 
-                    var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.arena.allocator(), name_message.data);
-                    var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(g.arena.allocator(), caption_message.data);
+                    var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(arena, name_message.data);
+                    var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(arena, caption_message.data);
 
                     if (name_message_utf8.len == 0 and caption_message_utf8.len == 0) {
-                        name_message_utf8 = try std.fmt.allocPrintSentinel(g.arena.allocator(), "UnknownName_{}", .{self.next_idx}, 0);
-                        caption_message_utf8 = try std.fmt.allocPrintSentinel(g.arena.allocator(), "UnknownCaption_{}", .{self.next_idx}, 0);
+                        name_message_utf8 = try std.fmt.allocPrintSentinel(arena, "UnknownName_{}", .{self.next_idx}, 0);
+                        caption_message_utf8 = try std.fmt.allocPrintSentinel(arena, "UnknownCaption_{}", .{self.next_idx}, 0);
                     }
 
                     const slot_capacity_data = item_detail.get(._SlotCapacityData, self.scope, .fo(g.sdk)) catch continue;
@@ -197,9 +221,26 @@ pub const Items = struct {
 
             return null;
         }
+    };
 
-        pub fn deinit(self: *IteratorAll) void {
-            self.scope.reset();
+    pub const IteratorCache = struct {
+        cache_iter: Cache.ValueIterator,
+
+        pub fn next(self: *IteratorCache) ?ItemDetails {
+            const entry = self.cache_iter.next() orelse return null;
+            return entry.*;
+        }
+    };
+
+    pub const Iterator = union(enum) {
+        entries: IteratorEntries,
+        cache: IteratorCache,
+
+        pub fn next(self: *Iterator) !?ItemDetails {
+            switch (self.*) {
+                .entries => return self.entries.next(),
+                .cache => return self.cache.next(),
+            }
         }
     };
 
@@ -220,41 +261,81 @@ pub const Items = struct {
 
     fn init(manager: *ItemManager) Items {
         return Items{
-            .categories = .init(g.arena.allocator()),
-            .items_cache = .init(g.arena.allocator()),
             .manager = manager,
+            .arena = .init(g.allocator),
         };
     }
 
-    pub fn iteratorAll(self: *Items, scope: *interop.Scope) !IteratorAll {
+    fn deinit(self: *Items) void {
+        self.arena.deinit();
+    }
+
+    fn populateItemCategories(self: *Items) !void {
+        const ItemCategoryT = try g.interop_cache.resolve("app.ItemCategory", g.tdb, .fo(g.sdk));
+        var scope = g.interop_cache.newScope(g.allocator);
+        defer scope.deinit();
+
+        const item_category_typedef = ItemCategoryT.type_def_metadata.def;
+        const arena = self.arena.allocator();
+        {
+            const fields_len = item_category_typedef.getNumFields(.fo(g.sdk));
+            var item_category_fields = try std.ArrayList(re.sdk.Field).initCapacity(arena, fields_len);
+            defer item_category_fields.deinit(arena);
+
+            const item_category_fields_slice = item_category_fields.addManyAsSliceBounded(fields_len) catch unreachable;
+            const fields = try item_category_typedef.getFields(.fo(g.sdk), item_category_fields_slice);
+
+            for (fields) |field| {
+                const field_type = field.getType(.fo(g.sdk)) orelse continue;
+                if (!field.isStatic(.fo(g.sdk)) or field_type.raw != item_category_typedef.raw) continue;
+
+                const name = field.getName(.fo(g.sdk)) orelse continue;
+                const field_value = interop.defaultToZigInterop(re.sdk.ManagedObject)(
+                    @constCast(&g.sdk),
+                    &scope,
+                    field_type,
+                    @ptrCast(@alignCast(field.getDataRaw(.fo(g.sdk), null, false) orelse continue)),
+                ) catch continue;
+
+                try self.categories.put(arena, field_value, name);
+            }
+        }
+
+        log.debug("ItemCategories: {}", .{self.categories.count()});
+    }
+
+    pub fn iterator(self: *Items, scope: *interop.Scope) !Iterator {
         const item_catalog: *ConcurrentCatalogDictionary = self.manager._ItemCatalog;
 
         const dict = item_catalog._Dict;
-        const count = dict._count;
 
         const version = dict._version;
         if (self.last_version != version) {
             @branchHint(.cold);
-            var iter = self.items_cache.valueIterator();
-            while (iter.next()) |v| {
-                g.arena.allocator().free(v.name);
-                g.arena.allocator().free(v.caption);
-            }
-            self.items_cache.clearRetainingCapacity();
+            self.items_cache = .empty;
+            _ = self.arena.reset(.retain_capacity);
+
             self.last_version = version;
-        }
 
-        const entries = interop.SystemArrayEntries.unsafe(dict._entries, .fo(g.sdk));
+            const entries = interop.SystemArrayEntries.unsafe(dict._entries, .fo(g.sdk));
 
-        if (entries.contained_type_def.getVmObjType(.fo(g.sdk)) != .valtype) {
-            return error.UnexpectedContainedType;
+            if (entries.contained_type_def.getVmObjType(.fo(g.sdk)) != .valtype) {
+                return error.UnexpectedContainedType;
+            }
+
+            return .{
+                .entries = .{
+                    .owner = self,
+                    .scope = scope,
+                    .entries = entries,
+                },
+            };
         }
 
         return .{
-            .owner = self,
-            .scope = scope,
-            .count = @intCast(count),
-            .entries = entries,
+            .cache = .{
+                .cache_iter = self.items_cache.valueIterator(),
+            },
         };
     }
 
@@ -317,44 +398,10 @@ fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime meth
     return metadata;
 }
 
-fn populateItemCategories() !void {
+fn onStart() !void {
     g.api.lockLua();
     defer g.api.unlockLua();
-
-    var scope = g.interop_cache.newScope(g.allocator);
-    defer scope.deinit();
-
-    const item_category_typedef = g.tdb.findType(.fo(g.sdk), "app.ItemCategory") orelse return error.ItemCategoryTypeNotFound;
-    {
-        const fields_len = item_category_typedef.getNumFields(.fo(g.sdk));
-        var item_category_fields = try std.ArrayList(re.sdk.Field).initCapacity(g.arena.allocator(), fields_len);
-        defer item_category_fields.deinit(g.arena.allocator());
-
-        const item_category_fields_slice = item_category_fields.addManyAsSliceBounded(fields_len) catch unreachable;
-        const fields = try item_category_typedef.getFields(.fo(g.sdk), item_category_fields_slice);
-
-        for (fields) |field| {
-            const field_type = field.getType(.fo(g.sdk)) orelse continue;
-            if (!field.isStatic(.fo(g.sdk)) or field_type.raw != item_category_typedef.raw) continue;
-
-            const name = field.getName(.fo(g.sdk)) orelse continue;
-            const data: *?*anyopaque = @ptrCast(@alignCast(field.getDataRaw(.fo(g.sdk), null, false) orelse continue));
-            const field_value = interop.defaultToZigInterop(re.sdk.ManagedObject)(
-                @constCast(&g.sdk),
-                &scope,
-                field_type,
-                data,
-            ) catch continue;
-
-            try g.items.categories.put(field_value, name);
-        }
-    }
-
-    log.debug("ItemCategories: {}", .{g.items.categories.count()});
-}
-
-fn onStart() !void {
-    try populateItemCategories();
+    try g.items.populateItemCategories();
 }
 
 fn onPlayerInitialized() !void {

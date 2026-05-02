@@ -25,15 +25,32 @@ pub inline fn isManagedInterop(T: type) bool {
         @hasDecl(T.Runtime, "checkedInit");
 }
 
-fn ManagedObject(comptime Builder: type) type {
+fn ObjectCache(comptime full_type_name: [:0]const u8) type {
     return struct {
+        const _full_type_name = full_type_name;
         var cached_metadata: std.atomic.Value(?*ManagedObjectMetadata) = .init(null);
 
+        inline fn getMetadata() ?*ManagedObjectMetadata {
+            if (cached_metadata.load(.acquire)) |metadata| {
+                return metadata;
+            }
+            return null;
+        }
+
+        inline fn setMetadata(metadata: *ManagedObjectMetadata) void {
+            cached_metadata.store(metadata, .release);
+        }
+    };
+}
+
+fn ManagedObject(comptime Builder: type) type {
+    return struct {
         metadata: *ManagedObjectMetadata,
 
         pub const fullTypeName = Builder.fullTypeName;
 
         const ManagedObjectType = @This();
+        const Cache = ObjectCache(fullTypeName());
 
         pub const Instance = struct {
             managed: api.sdk.ManagedObject,
@@ -103,7 +120,6 @@ fn ManagedObject(comptime Builder: type) type {
                     field_metadata,
                     Field.set,
                     false,
-                    false,
                     .fo(sdk),
                     value,
                 );
@@ -147,8 +163,8 @@ fn ManagedObject(comptime Builder: type) type {
             .tdb = .find_type,
         })) !ManagedObjectType {
             return blk: {
-                if (getStaticRuntime()) |runtime| {
-                    break :blk runtime;
+                if (Cache.getMetadata()) |metadata| {
+                    break :blk ManagedObjectType{ .metadata = metadata };
                 } else {
                     const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
                     const type_def = tdb.findType(.fo(sdk), fullTypeName()) orelse return error.NoTypeDefFound;
@@ -159,8 +175,8 @@ fn ManagedObject(comptime Builder: type) type {
 
         pub fn getWithTdb(cache: *ManagedTypeCache, sdk: InteropSdk.Extend(.{ .tdb = .find_type }), tdb: api.sdk.Tdb) !ManagedObjectType {
             return blk: {
-                if (getStaticRuntime()) |runtime| {
-                    break :blk runtime;
+                if (Cache.getMetadata()) |metadata| {
+                    break :blk ManagedObjectType{ .metadata = metadata };
                 } else {
                     const type_def = tdb.findType(.fo(sdk), fullTypeName()) orelse return error.NoTypeDefFound;
                     break :blk checkedRuntime(cache, .fo(sdk), type_def);
@@ -201,7 +217,7 @@ fn ManagedObject(comptime Builder: type) type {
             @setRuntimeSafety(false);
             const Field = Builder.GetField(field, Instance);
             const field_metadata = self.metadata.fields[Field.Id];
-            return scope.readField(null, field_metadata, Field.Type, Field.get, false, .fo(sdk));
+            return scope.readStaticField(field_metadata, Field.Type, Field.get, .fo(sdk));
         }
 
         pub inline fn setStatic(
@@ -214,7 +230,7 @@ fn ManagedObject(comptime Builder: type) type {
             @setRuntimeSafety(false);
             const Field = Builder.GetField(field, Instance);
             const field_metadata = self.metadata.fields[Field.Id];
-            return scope.writeField(null, field_metadata, Field.set, false, true, .fo(sdk), value);
+            return scope.writeStaticField(field_metadata, Field.set, .fo(sdk), value);
         }
 
         pub inline fn getMethod(self: ManagedObjectType, comptime method: @EnumLiteral()) api.sdk.Method {
@@ -222,18 +238,10 @@ fn ManagedObject(comptime Builder: type) type {
             return self.metadata.methods[Method.Id].handle;
         }
 
-        fn getStaticRuntime() ?ManagedObjectType {
-            if (cached_metadata.load(.acquire)) |metadata| {
-                return .{ .metadata = metadata };
-            }
-
-            return null;
-        }
-
         fn checkedInit(cache: *ManagedTypeCache, sdk: InteropSdk, managed: api.sdk.ManagedObject) !Instance {
             const runtime = blk: {
-                if (getStaticRuntime()) |runtime| {
-                    break :blk runtime;
+                if (Cache.getMetadata()) |metadata| {
+                    break :blk ManagedObjectType{ .metadata = metadata };
                 } else {
                     const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
                     break :blk try checkedRuntime(cache, sdk, type_def);
@@ -323,7 +331,7 @@ fn ManagedObject(comptime Builder: type) type {
                 .methods = try collected_methods.toOwnedSlice(arena),
                 .fields = try collected_fields.toOwnedSlice(arena),
             };
-            cached_metadata.store(metadata, .release);
+            ObjectCache(fullTypeName()).setMetadata(metadata);
             return .{ .metadata = metadata };
         }
     }.Instance;

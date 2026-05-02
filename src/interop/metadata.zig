@@ -53,13 +53,13 @@ pub const MethodMetadata = struct {
     }
 };
 
-pub const invalid_offset: u32 = std.math.maxInt(u32);
+pub const invalid_offset: usize = std.math.maxInt(usize);
 
 // https://github.com/praydog/REFramework/blob/ce9df1fe81e897c117d85ac9c4446a1a453b938f/shared/sdk/RETypeDefinition.cpp#L434
 pub const FieldMetadata = struct {
     handle: api.sdk.Field,
     type_def: api.sdk.TypeDefinition,
-    offset: u32 = invalid_offset,
+    offset: usize = invalid_offset,
 
     pub const field_specs = .get_type;
 };

@@ -18,6 +18,10 @@ pub const ManagedObject = extern struct {
 
     const Self = @This();
 
+    pub inline fn unsafe(raw: ?*anyopaque) Self {
+        return .{ .raw = @ptrCast(raw) };
+    }
+
     pub inline fn handle(self: Self) API.REFrameworkManagedObjectHandle {
         return self.raw;
     }
