@@ -12,6 +12,9 @@ const managed_type_cache = @import("interop/managed_type_cache.zig");
 pub const ManagedTypeCache = managed_type_cache.ManagedTypeCache;
 pub const Scope = @import("interop/Scope.zig");
 
+const resolved_type = @import("interop/resolved_type.zig");
+pub const ResolvedType = resolved_type.ResolvedType;
+
 const misc = @import("interop/misc.zig");
 const isSafeMode = misc.isSafeMode;
 
@@ -23,14 +26,15 @@ const isManagedInterop = type_builder.isManagedInterop;
 const native = std.builtin.Endian.native;
 
 const sdk_interop_specs = .{
-    .functions = .{
-        .create_managed_string,
-        .create_managed_string_normal,
-    },
+    .functions = api.specs.merge(
+        .{ .create_managed_string, .create_managed_string_normal },
+        Scope.functions_sepcs,
+    ),
     .managed_object = Scope.managed_object_specs,
     .method = Scope.method_specs,
     .field = api.specs.merge(Scope.field_specs, .get_offset_from_base),
     .type_definition = .all,
+    .tdb = resolved_type.tdb_specs,
 };
 
 pub const InteropSdk = api.VerifiedSdk(sdk_interop_specs);

@@ -158,10 +158,7 @@ fn ManagedObject(comptime Builder: type) type {
             pub const fullTypeName = Builder.fullTypeName;
         };
 
-        pub fn get(cache: *ManagedTypeCache, sdk: InteropSdk.Extend(.{
-            .functions = .{ .extend = .get_tdb },
-            .tdb = .find_type,
-        })) !ManagedObjectType {
+        pub fn get(cache: *ManagedTypeCache, sdk: InteropSdk) !ManagedObjectType {
             return blk: {
                 if (Cache.getMetadata()) |metadata| {
                     break :blk ManagedObjectType{ .metadata = metadata };

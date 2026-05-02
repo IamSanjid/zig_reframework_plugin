@@ -28,6 +28,7 @@ const Scope = @This();
 pub const method_specs = api.specs.merge(.{ .invoke, .is_static }, MethodMetadata.method_specs);
 pub const field_specs = api.specs.merge(.{ .get_data_raw, .is_static }, FieldMetadata.field_specs);
 pub const managed_object_specs = .get_type_definition;
+pub const functions_sepcs = .get_tdb;
 
 pub fn init(allocator: std.mem.Allocator, cache: *ManagedTypeCache) Scope {
     return .{
@@ -367,7 +368,7 @@ pub fn callStaticMethod(
     sdk: api.VerifiedSdk(.{
         .method = method_specs,
         .type_definition = .all,
-        .functions = .get_tdb,
+        .functions = functions_sepcs,
         .tdb = .find_type,
     }),
     args: anytype,
@@ -386,7 +387,7 @@ pub inline fn callStaticMethodWithInterops(
     sdk: api.VerifiedSdk(.{
         .method = method_specs,
         .type_definition = .all,
-        .functions = .get_tdb,
+        .functions = functions_sepcs,
         .tdb = .find_type,
     }),
     args: anytype,
@@ -444,7 +445,7 @@ pub inline fn getStaticField(
     sdk: api.VerifiedSdk(.{
         .field = field_specs,
         .type_definition = .all,
-        .functions = .get_tdb,
+        .functions = functions_sepcs,
         .tdb = .find_type,
     }),
 ) !T {
@@ -460,7 +461,7 @@ pub inline fn getStaticFieldWithInterop(
     sdk: api.VerifiedSdk(.{
         .field = field_specs,
         .type_definition = .all,
-        .functions = .get_tdb,
+        .functions = functions_sepcs,
         .tdb = .find_type,
     }),
 ) !T {
@@ -506,7 +507,7 @@ pub inline fn setStaticField(
     sdk: api.VerifiedSdk(.{
         .field = field_specs,
         .type_definition = .all,
-        .functions = .get_tdb,
+        .functions = functions_sepcs,
         .tdb = .find_type,
     }),
     value: anytype,
@@ -522,7 +523,7 @@ pub inline fn setStaticFieldWithInterop(
     sdk: api.VerifiedSdk(.{
         .field = field_specs,
         .type_definition = .all,
-        .functions = .get_tdb,
+        .functions = functions_sepcs,
         .tdb = .find_type,
     }),
     value: anytype,

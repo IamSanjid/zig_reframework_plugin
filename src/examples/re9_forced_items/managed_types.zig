@@ -78,11 +78,42 @@ pub const InventorySlotCapacitySetting = interop.ManagedObjectTypeBuilder("app.I
     // .Field(._OverwriteCapacityData, SystemArray, null, null)
     .Build();
 
+fn messageSystemGuidToString(
+    sdk_ptr: *const anyopaque,
+    scope: *interop.Scope,
+    from_type_def: re.sdk.TypeDefinition,
+    data: *?*anyopaque,
+) anyerror![:0]const u8 {
+    var name_buf: [256]u8 = undefined;
+    const sdk: *const interop.InteropSdk = @ptrCast(@alignCast(sdk_ptr));
+    const tdb = re.sdk.getTdb(.fo(sdk)) orelse return error.GetTdbFailed;
+
+    if (from_type_def.getVmObjType(.fo(sdk)) != .valtype) {
+        return error.ExpectedValueType;
+    }
+    if (!std.mem.eql(u8, try from_type_def.getFullName(.fo(sdk), &name_buf), "System.Guid")) {
+        return error.ExpectedSystemGuid;
+    }
+    const arena = scope.arena.allocator();
+    const message_id = try interop.ValueType.init(arena, .fo(sdk), data, from_type_def);
+    const GuiMessageT = try scope.cache.resolve("via.gui.message", tdb, .fo(sdk));
+    const message = try GuiMessageT.scoped(scope).callStaticMethod(
+        "get(System.Guid)",
+        interop.SystemStringView,
+        .fo(sdk),
+        .{message_id},
+    );
+    return std.unicode.utf16LeToUtf8AllocZ(arena, message.data);
+}
+
 pub const ItemDetailData = interop.ManagedObjectTypeBuilder("app.ItemDetailData")
     .Field(._ItemID, ItemId, null, null)
     .Field(._ItemCategory, ItemCategory, null, null)
-    .Field(._NameMessageId, SystemGuid, null, null)
-    .Field(._CaptionMessageId, SystemGuid, null, null)
+    // We won't be able to set, it will create a managed string and point to that
+    // newly created string but it's expected to be a System.Guid, game will crash.
+    // But we don't care about setting it anyways we just want the in-game info.
+    .Field(._NameMessageId, [:0]const u8, messageSystemGuidToString, null)
+    .Field(._CaptionMessageId, [:0]const u8, messageSystemGuidToString, null)
     // app.InventoryPanelShapeSetting
     .Field(._PanelShapeData, re.sdk.ManagedObject, null, null)
     .Field(._SlotCapacityData, InventorySlotCapacitySetting, null, null)
@@ -102,6 +133,28 @@ pub const InventoryType = enum(c_int) {
     itembox = 1,
     shareitembox = 2,
 };
+
+pub const ItemLoadingType = enum(c_int) {
+    none = 0,
+    type_a = 1,
+    type_b = 2,
+};
+
+pub const InventoryPanelItemInfo = interop.ManagedObjectTypeBuilder("app.Inventory.PanelItemInfo")
+    .Field(._IsInfiniteItem, bool, null, null)
+    .Field(._IsInfiniteLoader, bool, null, null)
+    .Field(._IsZeroCostLoader, bool, null, null)
+    .Field(._IsEquipment, bool, null, null)
+    .Field(._IsLoader, bool, null, null)
+    .Field(._IsGun, bool, null, null)
+    .Field(._DetailData, ItemDetailData, null, null)
+    .Field(._Stock, i32, null, null)
+    .Field(._StockCapacity, i32, null, null)
+    .Field(._AttachmentCostCapacity, i32, null, null)
+    .Field(._AttachedCost, i32, null, null)
+    .Field(._PanelState, re.sdk.ManagedObject, null, null)
+    .Field(._LoadingType, ItemLoadingType, null, null)
+    .Build();
 
 pub const Inventory = interop.ManagedObjectTypeBuilder("app.Inventory")
     .Method(.mergeMoneys, void, null)

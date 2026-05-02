@@ -136,17 +136,6 @@ pub const Items = struct {
 
                 const entry_ptr_usize = @intFromPtr(self.entries.ptr) + (self.next_idx * element_size);
 
-                const hash_code = self.scope.getFieldFromTypeDef(
-                    @ptrFromInt(entry_ptr_usize),
-                    self.entries.contained_type_def,
-                    "hashCode",
-                    u32,
-                    null,
-                    false,
-                    .fo(g.sdk),
-                ) catch continue;
-                if (hash_code == 0) continue;
-
                 const id = self.scope.getFieldFromTypeDef(
                     @ptrFromInt(entry_ptr_usize),
                     self.entries.contained_type_def,
@@ -176,33 +165,19 @@ pub const Items = struct {
                     const item_category = item_detail.get(._ItemCategory, self.scope, .fo(g.sdk)) catch continue;
 
                     // Scope arena allocated ValueType, scope resets it when its needed.
+                    // Interoped from System.Guid to [:0]const u8, we lost the original data value.
                     const name_message_id = item_detail.get(._NameMessageId, self.scope, .fo(g.sdk)) catch continue;
                     const caption_message_id = item_detail.get(._CaptionMessageId, self.scope, .fo(g.sdk)) catch continue;
 
-                    // We know the type name and method signature, so comptime version
-                    const GuiMessageT = try g.interop_cache.resolve("via.gui.message", g.tdb, .fo(g.sdk));
+                    const name_message_utf8 = if (name_message_id.len == 0)
+                        std.fmt.allocPrintSentinel(arena, "UnknownName_{}", .{self.next_idx}, 0) catch continue
+                    else
+                        arena.dupeZ(u8, name_message_id) catch continue;
 
-                    const name_message = GuiMessageT.scoped(self.scope).callStaticMethod(
-                        "get(System.Guid)",
-                        interop.SystemStringView,
-                        .fo(g.sdk),
-                        .{name_message_id},
-                    ) catch continue;
-
-                    const caption_message = GuiMessageT.scoped(self.scope).callStaticMethod(
-                        "get(System.Guid)",
-                        interop.SystemStringView,
-                        .fo(g.sdk),
-                        .{caption_message_id},
-                    ) catch continue;
-
-                    var name_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(arena, name_message.data);
-                    var caption_message_utf8 = try std.unicode.utf16LeToUtf8AllocZ(arena, caption_message.data);
-
-                    if (name_message_utf8.len == 0 and caption_message_utf8.len == 0) {
-                        name_message_utf8 = try std.fmt.allocPrintSentinel(arena, "UnknownName_{}", .{self.next_idx}, 0);
-                        caption_message_utf8 = try std.fmt.allocPrintSentinel(arena, "UnknownCaption_{}", .{self.next_idx}, 0);
-                    }
+                    const caption_message_utf8 = if (caption_message_id.len == 0)
+                        std.fmt.allocPrintSentinel(arena, "UnknownCaption_{}", .{self.next_idx}, 0) catch continue
+                    else
+                        arena.dupeZ(u8, caption_message_id) catch continue;
 
                     const slot_capacity_data = item_detail.get(._SlotCapacityData, self.scope, .fo(g.sdk)) catch continue;
 
