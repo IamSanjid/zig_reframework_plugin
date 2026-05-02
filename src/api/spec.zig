@@ -7,12 +7,14 @@ const fieldsWithIntendedName = type_utils.fieldsWithIntendedName;
 const fieldIndexWithIntendedName = type_utils.fieldIndexWithIntendedName;
 
 fn ComptimeMerge(comptime a: anytype, comptime b: anytype) type {
+    // Converts enum literals to tuple struct
     const a_struct = if (@TypeOf(a) == @EnumLiteral()) .{a} else a;
     const b_struct = if (@TypeOf(b) == @EnumLiteral()) .{b} else b;
 
     const A = @TypeOf(a_struct);
     const B = @TypeOf(b_struct);
 
+    // Get all the expected field names, converts tuple enum literals to their tag name as field names.
     const a_fields = fieldsWithIntendedName(a_struct);
     const b_fields = fieldsWithIntendedName(b_struct);
 
@@ -51,7 +53,8 @@ fn ComptimeMerge(comptime a: anytype, comptime b: anytype) type {
     inline for (a_fields) |a_field| {
         field_names[field_index] = a_field.intended_name;
         if (fieldIndexWithIntendedName(b_struct, a_field.intended_name) != null) {
-            @compileError("Cannot merge spec a and spec b, both has '" ++ a_field.intended_name ++ "' field, use `extend` if you want to overwrite or extend.");
+            @compileError("Cannot merge spec a and spec b, both has '" ++ a_field.intended_name ++
+                "' field, use `extend` if you want to overwrite or extend.");
         } else {
             // unique a fields
             field_types[field_index], field_attrs[field_index] = constructField(A, a_field);
@@ -132,12 +135,14 @@ test "mergeComptime" {
 
 /// Supports .{ .foo = .{ .extend = .{} } }
 fn ComptimeExtend(comptime a: anytype, comptime b: anytype) type {
+    // Converts enum literals to tuple struct
     const a_struct = if (@TypeOf(a) == @EnumLiteral()) .{a} else a;
     const b_struct = if (@TypeOf(b) == @EnumLiteral()) .{b} else b;
 
     const A = @TypeOf(a_struct);
     const B = @TypeOf(b_struct);
 
+    // Get all the expected field names, converts tuple enum literals to their tag name as field names.
     const a_fields = fieldsWithIntendedName(a_struct);
     const b_fields = fieldsWithIntendedName(b_struct);
 
@@ -182,6 +187,13 @@ fn ComptimeExtend(comptime a: anytype, comptime b: anytype) type {
             // support .extend
             const extend_field = @field(b_struct, b_field.orig_name);
             const ExtendFieldT = @TypeOf(extend_field);
+            // case:
+            //   a = .{ .foo = .{ ... } }
+            //   b = .{ .foo = .{ .extend = .{ ... } } }
+            // Base field name is `foo`, we're extending a's `foo` field with b's `foo` field.
+            // If b's `foo.extend` has a field which name collidse with one of a's `foo` field,
+            // it will get overwritten by b's `foo.extend.that_field`.
+            // It happens recursively, so a's `foo.bar` can be extended by b's `foo.extend.bar.extend`, and so on.
             if (ExtendFieldT != @EnumLiteral() and @hasField(ExtendFieldT, "extend")) {
                 const ExtendT = ComptimeExtend(@field(a_struct, a_field.orig_name), extend_field.extend);
                 field_types[field_index] = ExtendT.T;
@@ -229,6 +241,7 @@ fn ComptimeExtend(comptime a: anytype, comptime b: anytype) type {
                     const extend_field = @field(b_struct, b_field.orig_name);
                     const ExtendFieldT = @TypeOf(extend_field);
                     if (ExtendFieldT != @EnumLiteral() and @hasField(ExtendFieldT, "extend")) {
+                        // TODO: We're wasting compile time to compute ExtendT here? Or it gets cached by zig?
                         const ExtendT = ComptimeExtend(@field(a_struct, a_field.orig_name), extend_field.extend);
                         @field(out, a_field.intended_name) = ExtendT.init();
                     } else {

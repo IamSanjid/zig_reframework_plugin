@@ -13,7 +13,7 @@ const ReframeworkConfig = struct {
     optimize: std.builtin.OptimizeMode,
 };
 
-const Owner = @This();
+const Build = @This();
 
 fn REFrameworkExamplesT(comptime examples: anytype) type {
     const ExamplesT = @TypeOf(examples);
@@ -41,14 +41,14 @@ fn REFrameworkExamplesT(comptime examples: anytype) type {
             if (tag == .all) {
                 inline for (@typeInfo(ExamplesT).@"struct".fields) |field| {
                     const tag_name = @tagName(@field(examples, field.name));
-                    const builder = @field(Owner, tag_name ++ "_builder");
+                    const builder = @field(Build, tag_name ++ "_builder");
                     builder(b, target, optimize);
                 }
             } else {
                 inline for (@typeInfo(ExamplesT).@"struct".fields) |field| {
                     const tag_name = @tagName(@field(examples, field.name));
                     if (tag == @field(Tag, tag_name)) {
-                        const builder = @field(Owner, tag_name ++ "_builder");
+                        const builder = @field(Build, tag_name ++ "_builder");
                         return builder(b, target, optimize);
                     }
                 }
@@ -62,7 +62,7 @@ const REFrameworkExamples = REFrameworkExamplesT(.{
     .re9_additional_save_slots,
     .re9_forced_items,
     .re_imgui,
-    // .re_imgui_custom, Disabled for 0.17.0+nightly zig. Renable when the zig's Clang frontend supports LLVM22, fully.
+    //.re_imgui_custom, // Disabled for 0.17.0+nightly zig. Renable when the zig's Clang frontend supports LLVM22, fully.
 });
 
 pub fn build(b: *std.Build) void {
@@ -129,7 +129,6 @@ fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
     build_options.addOption(u2, "D3D_DX11", @intFromEnum(D3D.dx11));
     build_options.addOption(u2, "D3D_DX12", @intFromEnum(D3D.dx12));
     build_options.addOption(u2, "D3D_DX11_DX12", @intFromEnum(D3D.dx11_dx12));
-    build_options.addOption(std.builtin.OptimizeMode, "optimize_mode", config.optimize);
 
     if (config.d3d) |renderer| {
         const win32 = (b.lazyDependency("win32", .{}) orelse return null).module("win32");

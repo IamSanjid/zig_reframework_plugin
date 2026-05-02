@@ -1,15 +1,15 @@
 const std = @import("std");
-const native = std.builtin.Endian.native;
+
+const max_align = @max(@alignOf(u64), @alignOf(*anyopaque));
 
 pub const InvokeRet = extern struct {
-    bytes: [128]u8 = [_]u8{0} ** 128,
-    exception_thrown: bool = false,
+    bytes: [129]u8 align(max_align) = @splat(0),
 
     pub inline fn as(self: *const InvokeRet, T: type) T {
         if (@typeInfo(T) != .int or @typeInfo(T).int.bits > @sizeOf(u128) * std.mem.byte_size_in_bits) {
             @compileError("Unsupported type for InvokeRet.as: " ++ @typeName(T));
         }
-        return std.mem.readInt(T, self.bytes[0..@sizeOf(T)], native);
+        return std.mem.bytesAsValue(T, self.bytes[0..@sizeOf(T)]).*;
     }
 
     pub inline fn asU8(self: *const InvokeRet) u8 {
@@ -52,6 +52,5 @@ pub const InvokeRet = extern struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(InvokeRet) == 129); // 128 + 1
-    std.debug.assert(@offsetOf(InvokeRet, "exception_thrown") == 128);
+    std.debug.assert(@sizeOf(InvokeRet) >= 129); // 128 bytes for data + 1 byte for "exception thrown" flag
 }

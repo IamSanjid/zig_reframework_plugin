@@ -1,0 +1,512 @@
+/// Should be used for scoped access to cached metadata and interop functions.
+/// Not thread safe, should be created and used within the same thread, but multiple
+/// scopes can exist at the same time.
+const std = @import("std");
+const type_utils = @import("../type_utils.zig");
+const api = @import("../api.zig");
+
+const m = @import("metadata.zig");
+const MethodMetadata = m.MethodMetadata;
+const FieldMetadata = m.FieldMetadata;
+
+const isSafeMode = @import("misc.zig").isSafeMode;
+
+const ManagedTypeCache = @import("managed_type_cache.zig").ManagedTypeCache;
+
+const in = @import("../interop.zig");
+const ValueType = in.ValueType;
+const ToZigInterop = in.ToZigInterop;
+const FromZigInterop = in.FromZigInterop;
+const defaultToZigInterop = in.defaultToZigInterop;
+const defaultFromZigInterop = in.defaultFromZigInterop;
+
+cache: *ManagedTypeCache,
+arena: std.heap.ArenaAllocator,
+
+const Scope = @This();
+
+pub const method_specs = api.specs.merge(.{ .invoke, .is_static }, MethodMetadata.method_specs);
+pub const field_specs = api.specs.merge(.{ .get_data_raw, .is_static }, FieldMetadata.field_specs);
+pub const managed_object_specs = .get_type_definition;
+
+pub fn init(allocator: std.mem.Allocator, cache: *ManagedTypeCache) Scope {
+    return .{
+        .cache = cache,
+        .arena = std.heap.ArenaAllocator.init(allocator),
+    };
+}
+
+pub fn reset(self: *Scope) void {
+    _ = self.arena.reset(.retain_capacity);
+}
+
+pub fn deinit(self: *Scope) void {
+    self.arena.deinit();
+}
+
+pub fn invokeMethod(
+    self: *Scope,
+    obj: ?*anyopaque,
+    method_metadata: *MethodMetadata,
+    comptime param_interops: anytype,
+    comptime ret: anytype,
+    comptime static: bool,
+    sdk: api.VerifiedSdk(.{
+        .method = method_specs,
+        .type_definition = .all,
+    }),
+    args: anytype,
+) !ret.type {
+    @setRuntimeSafety(false);
+
+    if (!type_utils.isTuple(@TypeOf(param_interops))) {
+        @compileError("Please pass interops as tuple values");
+    }
+    if (!type_utils.isPureStruct(@TypeOf(ret))) {
+        @compileError("Please provide 'ret' with 'type', 'interop' fields.");
+    }
+    if (!type_utils.isTuple(@TypeOf(args))) {
+        @compileError("'args' has to be a tuple");
+    }
+
+    if (comptime static and isSafeMode()) {
+        if (!method_metadata.handle.isStatic(.fo(sdk))) {
+            return error.RequiresInstance;
+        }
+    }
+
+    var built_args = try buildMethodArgs(&sdk, self, method_metadata, args, param_interops);
+
+    const managed: api.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(obj)) };
+    var invoke_res: api.InvokeRet = .{};
+    try managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args, &invoke_res);
+
+    const p: *?*anyopaque = @ptrCast(@alignCast(&invoke_res.bytes[0]));
+    // https://github.com/praydog/REFramework/blob/63dd83ead22bbab924b93bbd32e5be36d3a09a4d/src/mods/bindings/Sdk.cpp#L960
+    // TODO: Use type full name?
+    if (ret.type == f32 and !@hasField(@TypeOf(ret), "interop")) {
+        return @floatCast(try defaultToZigInterop(f64)(
+            &sdk,
+            self,
+            method_metadata.ret_type_def,
+            p,
+        ));
+    } else {
+        const retInterop = if (@hasField(@TypeOf(ret), "interop"))
+            ret.interop
+        else
+            defaultToZigInterop(ret.type);
+
+        return try retInterop(
+            &sdk,
+            self,
+            method_metadata.ret_type_def,
+            p,
+        );
+    }
+}
+
+pub fn readField(
+    self: *Scope,
+    obj: ?*anyopaque,
+    field_metadata: *FieldMetadata,
+    comptime T: type,
+    comptime interop: ?ToZigInterop(T),
+    is_obj_valtype: bool,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+    }),
+) !T {
+    @setRuntimeSafety(false);
+
+    const field_handle = field_metadata.handle;
+
+    const data_read_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+        .fo(sdk),
+        obj,
+        is_obj_valtype,
+    )));
+
+    const getInterop = interop orelse defaultToZigInterop(T);
+    return getInterop(&sdk, self, field_metadata.type_def, data_read_ptr);
+}
+
+pub fn writeField(
+    self: *Scope,
+    obj: ?*anyopaque,
+    field_metadata: *FieldMetadata,
+    comptime interop: ?FromZigInterop,
+    is_obj_valtype: bool,
+    comptime static: bool,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+    }),
+    value: anytype,
+) !void {
+    @setRuntimeSafety(false);
+
+    const is_valtype = field_metadata.type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+    const field_handle = field_metadata.handle;
+
+    if (comptime static) {
+        if (!field_handle.isStatic(.fo(sdk)) and !is_valtype) {
+            return error.RequiresInstance;
+        }
+    }
+
+    const data_write_ptr: *?*anyopaque = @ptrCast(@alignCast(field_handle.getDataRaw(
+        .fo(sdk),
+        obj,
+        is_obj_valtype,
+    )));
+
+    const setInterop = interop orelse defaultFromZigInterop;
+    return setInterop(&sdk, self, field_metadata.type_def, value, data_write_ptr);
+}
+
+pub fn getFieldFromTypeDef(
+    self: *Scope,
+    obj: ?*anyopaque,
+    type_def: api.sdk.TypeDefinition,
+    field_name: [:0]const u8,
+    comptime T: type,
+    comptime interop: ?ToZigInterop(T),
+    comptime passed_managed_obj: bool,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+    }),
+) !T {
+    const field_metadata = try self.cache.getOrCacheFieldMetadata(.fo(sdk), type_def, field_name);
+
+    const is_passed_type_valtype = type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+    return self.readField(
+        obj,
+        field_metadata,
+        T,
+        interop,
+        is_passed_type_valtype and !passed_managed_obj,
+        .fo(sdk),
+    );
+}
+
+pub fn setFieldFromTypeDef(
+    self: *Scope,
+    obj: ?*anyopaque,
+    type_def: api.sdk.TypeDefinition,
+    field_name: [:0]const u8,
+    comptime interop: ?FromZigInterop,
+    comptime passed_managed_obj: bool,
+    comptime static: bool,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+    }),
+    value: anytype,
+) !void {
+    // const field = comptime if (@TypeOf(field_data) == @EnumLiteral()) .{
+    //     .name = @tagName(field_data),
+    // } else field_data;
+    // const FieldT = @TypeOf(field);
+
+    const field_metadata = try self.cache.getOrCacheFieldMetadata(.fo(sdk), type_def, field_name);
+
+    const is_passed_type_valtype = type_def.getVmObjType(.fo(sdk)) == .valtype;
+
+    return self.writeField(
+        obj,
+        field_metadata,
+        interop,
+        is_passed_type_valtype and !passed_managed_obj,
+        static,
+        .fo(sdk),
+        value,
+    );
+}
+
+pub inline fn callMethod(
+    self: *Scope,
+    managed: api.sdk.ManagedObject,
+    sig: [:0]const u8,
+    comptime RetType: type,
+    sdk: api.VerifiedSdk(.{
+        .method = method_specs,
+        .managed_object = managed_object_specs,
+        .type_definition = .all,
+    }),
+    args: anytype,
+) !RetType {
+    return self.callMethodWithInterops(managed, sig, .{}, RetType, null, .fo(sdk), args);
+}
+
+/// Accepts param interops and return interop, which allows you to control how parameters
+/// and return value are marshaled between Zig and the managed environment.
+///
+/// If you just want to interop RetType, you can pass empty struct for param_interops and provide
+/// interop for RetType in rInterop.
+///
+/// If you just want to interop parameters, you can provide interops for parameters, and `rInterop`
+/// as null.
+pub inline fn callMethodWithInterops(
+    self: *Scope,
+    managed: api.sdk.ManagedObject,
+    sig: [:0]const u8,
+    comptime param_interops: anytype,
+    comptime RetType: type,
+    comptime rInterop: ?ToZigInterop(RetType),
+    sdk: api.VerifiedSdk(.{
+        .method = method_specs,
+        .managed_object = managed_object_specs,
+        .type_definition = .all,
+    }),
+    args: anytype,
+) !RetType {
+    const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
+    const method_metadata = try self.cache.getOrCacheMethodMetadata(.fo(sdk), type_def, sig);
+    const retInterop = comptime rInterop orelse defaultToZigInterop(RetType);
+    return try self.invokeMethod(
+        managed.raw,
+        method_metadata,
+        param_interops,
+        .{ .type = RetType, .interop = retInterop },
+        false,
+        .fo(sdk),
+        args,
+    );
+}
+
+pub fn callStaticMethod(
+    self: *Scope,
+    managed_type_name: [:0]const u8,
+    sig: [:0]const u8,
+    comptime RetType: type,
+    sdk: api.VerifiedSdk(.{
+        .method = method_specs,
+        .type_definition = .all,
+        .functions = .get_tdb,
+        .tdb = .find_type,
+    }),
+    args: anytype,
+) !RetType {
+    return self.callStaticMethodWithInterops(managed_type_name, sig, .{}, RetType, null, .fo(sdk), args);
+}
+
+/// Same as `callMethodWithInterops` but for static methods, see its documentation for details.
+pub inline fn callStaticMethodWithInterops(
+    self: *Scope,
+    managed_type_name: [:0]const u8,
+    sig: [:0]const u8,
+    comptime param_interops: anytype,
+    comptime RetType: type,
+    comptime rInterop: ?ToZigInterop(RetType),
+    sdk: api.VerifiedSdk(.{
+        .method = method_specs,
+        .type_definition = .all,
+        .functions = .get_tdb,
+        .tdb = .find_type,
+    }),
+    args: anytype,
+) !RetType {
+    const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
+    const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
+    const method_metadata = try self.cache.getOrCacheMethodMetadata(.fo(sdk), type_def, sig);
+    const retInterop = comptime rInterop orelse defaultToZigInterop(RetType);
+    return try self.invokeMethod(
+        null,
+        method_metadata,
+        param_interops,
+        .{ .type = RetType, .interop = retInterop },
+        true,
+        .fo(sdk),
+        args,
+    );
+}
+
+pub inline fn getField(
+    self: *Scope,
+    managed: api.sdk.ManagedObject,
+    field_name: [:0]const u8,
+    comptime T: type,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .managed_object = managed_object_specs,
+        .type_definition = .all,
+    }),
+) !T {
+    return self.getFieldWithInterop(managed, field_name, T, defaultToZigInterop(T), .fo(sdk));
+}
+
+pub inline fn getFieldWithInterop(
+    self: *Scope,
+    managed: api.sdk.ManagedObject,
+    field_name: [:0]const u8,
+    comptime T: type,
+    comptime interop: ToZigInterop(T),
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .managed_object = managed_object_specs,
+        .type_definition = .all,
+    }),
+) !T {
+    const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
+    return try self.getFieldFromTypeDef(managed.raw, type_def, field_name, T, interop, true, .fo(sdk));
+}
+
+pub inline fn getStaticField(
+    self: *Scope,
+    managed_type_name: [:0]const u8,
+    field_name: [:0]const u8,
+    comptime T: type,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+        .functions = .get_tdb,
+        .tdb = .find_type,
+    }),
+) !T {
+    return self.getStaticFieldWithInterop(managed_type_name, field_name, T, defaultToZigInterop(T), .fo(sdk));
+}
+
+pub inline fn getStaticFieldWithInterop(
+    self: *Scope,
+    managed_type_name: [:0]const u8,
+    field_name: [:0]const u8,
+    comptime T: type,
+    comptime interop: ToZigInterop(T),
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+        .functions = .get_tdb,
+        .tdb = .find_type,
+    }),
+) !T {
+    const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
+    const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
+    return try self.getFieldFromTypeDef(null, type_def, field_name, T, interop, false, .fo(sdk));
+}
+
+pub inline fn setField(
+    self: *Scope,
+    managed: api.sdk.ManagedObject,
+    field_name: [:0]const u8,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .managed_object = managed_object_specs,
+        .type_definition = .all,
+    }),
+    value: anytype,
+) !void {
+    return self.setFieldWithInterop(managed, field_name, defaultFromZigInterop, .fo(sdk), value);
+}
+
+pub inline fn setFieldWithInterop(
+    self: *Scope,
+    managed: api.sdk.ManagedObject,
+    field_name: [:0]const u8,
+    comptime interop: FromZigInterop,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .managed_object = managed_object_specs,
+        .type_definition = .all,
+    }),
+    value: anytype,
+) !void {
+    const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
+    return try self.setFieldFromTypeDef(managed.raw, type_def, field_name, interop, true, false, .fo(sdk), value);
+}
+
+pub inline fn setStaticField(
+    self: *Scope,
+    managed_type_name: [:0]const u8,
+    field_name: [:0]const u8,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+        .functions = .get_tdb,
+        .tdb = .find_type,
+    }),
+    value: anytype,
+) !void {
+    return self.setStaticFieldWithInterop(managed_type_name, field_name, defaultFromZigInterop, .fo(sdk), value);
+}
+
+pub inline fn setStaticFieldWithInterop(
+    self: *Scope,
+    managed_type_name: [:0]const u8,
+    field_name: [:0]const u8,
+    comptime interop: FromZigInterop,
+    sdk: api.VerifiedSdk(.{
+        .field = field_specs,
+        .type_definition = .all,
+        .functions = .get_tdb,
+        .tdb = .find_type,
+    }),
+    value: anytype,
+) !void {
+    const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
+    const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
+    return try self.setFieldFromTypeDef(null, type_def, field_name, interop, false, true, .fo(sdk), value);
+}
+
+fn buildMethodArgsImpl(
+    sdk: *const anyopaque,
+    scope: *Scope,
+    method_metadata: *const MethodMetadata,
+    args: anytype,
+    comptime param_interops: [std.meta.fields(@TypeOf(args)).len]FromZigInterop,
+) anyerror![std.meta.fields(@TypeOf(args)).len]?*anyopaque {
+    @setRuntimeSafety(false);
+
+    const args_len = std.meta.fields(@TypeOf(args)).len;
+    var out: [args_len]?*anyopaque = undefined;
+
+    inline for (0..args_len) |i| {
+        const arg = @field(args, std.fmt.comptimePrint("{d}", .{i}));
+        if (@TypeOf(arg) == ValueType) {
+            out[i] = arg.valuePtr();
+        } else {
+            try param_interops[i](
+                sdk,
+                scope,
+                method_metadata.param_type_defs[i],
+                arg,
+                &out[i],
+            );
+        }
+    }
+
+    return out;
+}
+
+pub inline fn buildMethodArgs(
+    sdk: *const anyopaque,
+    scope: *Scope,
+    method_metadata: *const MethodMetadata,
+    args: anytype,
+    comptime param_interops: anytype,
+) anyerror![std.meta.fields(@TypeOf(args)).len]?*anyopaque {
+    const ParamInteropsT = @TypeOf(param_interops);
+    const param_interops_len = comptime std.meta.fields(ParamInteropsT).len;
+    const args_len = comptime std.meta.fields(@TypeOf(args)).len;
+    if (param_interops_len > 0 and param_interops_len != args_len) {
+        @compileError("param_interops len has to match the args length or has to be 0 or .{}");
+    }
+
+    comptime var param_interop_fns: [args_len]FromZigInterop = undefined;
+    if (param_interops_len > 0) {
+        inline for (0..args_len) |i| {
+            const arg_index_str = std.fmt.comptimePrint("{d}", .{i});
+            param_interop_fns[i] = @field(param_interops, arg_index_str);
+        }
+    } else {
+        inline for (0..args_len) |i| {
+            param_interop_fns[i] = defaultFromZigInterop;
+        }
+    }
+
+    return buildMethodArgsImpl(sdk, scope, method_metadata, args, param_interop_fns);
+}

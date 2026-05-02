@@ -43,6 +43,8 @@ pub const StructFieldWithIntendedName = struct {
     default_value_ptr: ?*const anyopaque = null,
 };
 
+/// For tuple structs which contains only enum literals, the intended name
+/// is the tag name of that enum literal.
 pub inline fn fieldsWithIntendedName(comptime value: anytype) [std.meta.fields(@TypeOf(value)).len]StructFieldWithIntendedName {
     const ValueT = @TypeOf(value);
     const orig_fields = @typeInfo(ValueT).@"struct".fields;
