@@ -52,64 +52,50 @@ comptime {
     std.debug.assert(@offsetOf(ItemManager, "_ItemCatalog") == 0xf0);
 }
 
-pub const SystemArray = interop.ManagedObject("System.Array", .{
-    .GetLength = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-        .ret = .{ .type = i32 },
-    },
-    .GetValue = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-        .ret = .{ .type = ?re.sdk.ManagedObject },
-    },
-    .SetValue = .{
-        .params = .{
-            // The signature becomes only the method name, no param type is included.
-            .{ .type_name = null, .type = re.sdk.ManagedObject },
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-        .ret = .{ .type = void },
-    },
-}, .{});
+pub const SystemArray = interop.ManagedObjectTypeBuilder("System.Array")
+    .Method(.GetLength, i32, null)
+    .Param("System.Int32", i32, null)
+    .MethodWithName("GetValue", .GetValue, ?re.api.sdk.ManagedObject, null)
+    .Param("System.Int32", i32, null)
+    .Method(.SetValue, void, null)
+    .Param(null, re.api.sdk.ManagedObject, null)
+    .Param("System.Int32", i32, null)
+    .Build();
 
 pub const SystemGuid = interop.ValueType;
 
 pub const ItemCategory = re.sdk.ManagedObject;
 pub const ItemId = re.sdk.ManagedObject;
 
-pub const InventoryPanelShapeSetting = interop.ManagedObject("app.InventoryPanelShapeSetting", .{}, .{
-    ._BaseShapeTypeCache = .{ .type = re.sdk.ManagedObject },
-    ._BaseShapeTypeStr = .{ .type = interop.SystemStringView },
-});
+pub const InventoryPanelShapeSetting = interop.ManagedObjectTypeBuilder("app.InventoryPanelShapeSetting")
+    .Field(._BaseShapeTypeCache, re.sdk.ManagedObject, null, null)
+    .Field(._BaseShapeTypeStr, interop.SystemStringView, null, null)
+    .Build();
 
-pub const InventorySlotCapacitySetting = interop.ManagedObject("app.InventorySlotCapacitySetting", .{}, .{
-    ._BaseCapacity = .{ .type = i32 },
-    ._BaseItemBoxCapacity = .{ .type = i32 },
-    // ._OverwriteCapacityData = .{ .type = SystemArray },
-});
+pub const InventorySlotCapacitySetting = interop.ManagedObjectTypeBuilder("app.InventorySlotCapacitySetting")
+    .Field(._BaseCapacity, i32, null, null)
+    .Field(._BaseItemBoxCapacity, i32, null, null)
+    // .Field(._OverwriteCapacityData, SystemArray, null, null)
+    .Build();
 
-pub const ItemDetailData = interop.ManagedObject("app.ItemDetailData", .{}, .{
-    ._ItemID = .{ .type = ItemId },
-    ._ItemCategory = .{ .type = ItemCategory },
-    ._NameMessageId = .{ .type = SystemGuid },
-    ._CaptionMessageId = .{ .type = SystemGuid },
+pub const ItemDetailData = interop.ManagedObjectTypeBuilder("app.ItemDetailData")
+    .Field(._ItemID, ItemId, null, null)
+    .Field(._ItemCategory, ItemCategory, null, null)
+    .Field(._NameMessageId, SystemGuid, null, null)
+    .Field(._CaptionMessageId, SystemGuid, null, null)
     // app.InventoryPanelShapeSetting
-    ._PanelShapeData = .{ .type = re.sdk.ManagedObject },
-    // app.InventorySlotCapacitySetting
-    ._SlotCapacityData = .{ .type = InventorySlotCapacitySetting },
-    ._AttachmentCostCapacity = .{ .type = i32 },
-});
+    .Field(._PanelShapeData, re.sdk.ManagedObject, null, null)
+    .Field(._SlotCapacityData, InventorySlotCapacitySetting, null, null)
+    .Field(._AttachmentCostCapacity, i32, null, null)
+    .Build();
 
-pub const InvenotryUser = interop.ManagedObject("app.InventoryUser", .{}, .{
-    .User00 = .{ .type = .self },
-    .User01 = .{ .type = .self },
-    .User02 = .{ .type = .self },
-    .User03 = .{ .type = .self },
-    .None = .{ .type = .self },
-});
+pub const InvenotryUser = interop.ManagedObjectTypeBuilder("app.InventoryUser")
+    .Field(.User00, interop.ManagedObjectSelf, null, null)
+    .Field(.User01, interop.ManagedObjectSelf, null, null)
+    .Field(.User02, interop.ManagedObjectSelf, null, null)
+    .Field(.User03, interop.ManagedObjectSelf, null, null)
+    .Field(.None, interop.ManagedObjectSelf, null, null)
+    .Build();
 
 pub const InventoryType = enum(c_int) {
     hand = 0,
@@ -117,46 +103,26 @@ pub const InventoryType = enum(c_int) {
     shareitembox = 2,
 };
 
-pub const Inventory = interop.ManagedObject("app.Inventory", .{
-    .mergeMoneys = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-    },
-}, .{
-    ._Moneys = .{ .type = i32 },
-    ._PanelItems = .{ .type = *GenericDictionary },
-});
+pub const Inventory = interop.ManagedObjectTypeBuilder("app.Inventory")
+    .Method(.mergeMoneys, void, null)
+    .Param("System.Int32", i32, null)
+    .Field(._Moneys, i32, null, null)
+    .Field(._PanelItems, *GenericDictionary, null, null)
+    .Build();
 
-pub const InventoryManager = interop.ManagedObject("app.InventoryManager", .{
-    .getInventory = .{
-        .params = .{
-            .{ .type_name = "app.InventoryUser", .type = InvenotryUser },
-            .{ .type_name = "app.InventoryType", .type = InventoryType },
-        },
-        .ret = .{ .type = ?Inventory },
-    },
-}, .{});
+pub const InventoryManager = interop.ManagedObjectTypeBuilder("app.InventoryManager")
+    .Method(.getInventory, ?Inventory, null)
+    .Param("app.InventoryUser", InvenotryUser, null)
+    .Param("app.InventoryType", InventoryType, null)
+    .Build();
 
-pub const PlayerContext = interop.ManagedObject("app.PlayerContext", .{
-    .get_InventoryUserID = .{
-        .params = .{},
-        .ret = .{ .type = InvenotryUser },
-    },
-    .onUnlinked = .{
-        .params = .{},
-    },
-}, .{});
+pub const PlayerContext = interop.ManagedObjectTypeBuilder("app.PlayerContext")
+    .Method(.get_InventoryUserID, InvenotryUser, null)
+    .Method(.onUnlinked, void, null)
+    .Build();
 
-pub const CharacterManager = interop.ManagedObject("app.CharacterManager", .{
-    .getPlayerContextRef = .{
-        .params = .{},
-        .ret = .{ .type = ?PlayerContext },
-    },
-    .notifyPlayerInitialized = .{
-        .params = .{},
-    },
-    .updateInveontoryForPlayer = .{
-        .params = .{},
-    },
-}, .{});
+pub const CharacterManager = interop.ManagedObjectTypeBuilder("app.CharacterManager")
+    .Method(.getPlayerContextRef, ?PlayerContext, null)
+    .Method(.notifyPlayerInitialized, void, null)
+    .Method(.updateInveontoryForPlayer, void, null)
+    .Build();

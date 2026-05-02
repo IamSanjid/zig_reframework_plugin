@@ -62,7 +62,7 @@ const REFrameworkExamples = REFrameworkExamplesT(.{
     .re9_additional_save_slots,
     .re9_forced_items,
     .re_imgui,
-    .re_imgui_custom,
+    // .re_imgui_custom, Disabled for 0.17.0+nightly zig. Renable when the zig's Clang frontend supports LLVM22, fully.
 });
 
 pub fn build(b: *std.Build) void {
@@ -105,7 +105,7 @@ pub fn build(b: *std.Build) void {
 }
 
 fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
-    const api_translate_c = b.addTranslateC(.{
+    const api_translator = b.addTranslateC(.{
         .root_source_file = b.path("reframework/include/reframework/API.h"),
         .target = config.target,
         .optimize = config.optimize,
@@ -115,11 +115,10 @@ fn reframework(b: *std.Build, config: ReframeworkConfig) ?*std.Build.Module {
         .root_source_file = b.path("src/root.zig"),
         .target = config.target,
         .optimize = config.optimize,
-        .link_libc = true,
         .imports = &.{
             .{
                 .name = "API",
-                .module = api_translate_c.createModule(),
+                .module = api_translator.createModule(),
             },
         },
     });
@@ -320,13 +319,13 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
         .target = target,
         .optimize = optimize,
     }) orelse return;
-    const cimgui_conf = @import("cimgui").getConfig(false);
-    const cimgui_clib = cimgui_dep.artifact(cimgui_conf.clib_name);
+    // const cimgui_conf = @import("cimgui").getConfig(false);
+    const cimgui_clib = cimgui_dep.artifact("cimgui_clib");
     // cimgui_clib.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
     const cimgui = b.addTranslateC(.{
         .target = target,
         .optimize = optimize,
-        .root_source_file = cimgui_dep.path(b.fmt("{s}/cimgui.h", .{cimgui_conf.include_dir})),
+        .root_source_file = cimgui_dep.path(b.fmt("{s}/cimgui.h", .{"src"})),
     });
     // cimgui.defineCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
 
@@ -355,7 +354,7 @@ fn addImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {
     to.root_module.addCMacro("IMGUI_API", "__declspec(dllexport)");
     to.root_module.addCMacro("IMGUI_IMPL_API", "extern \"C\" __declspec(dllexport)");
     // to.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "1");
-    to.root_module.addIncludePath(cimgui_dep.path(cimgui_conf.include_dir));
+    to.root_module.addIncludePath(cimgui_dep.path("src"));
     to.root_module.addIncludePath(b.path("reframework/src/re2-imgui/"));
     to.root_module.addCSourceFiles(.{
         .root = b.path("reframework/src/re2-imgui"),

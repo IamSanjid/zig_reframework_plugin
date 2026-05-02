@@ -54,8 +54,8 @@ pub const Api = struct {
     pub inline fn verifiedParam(
         self: *const Self,
         comptime spec: anytype,
-    ) !Verified(API.REFrameworkPluginInitializeParam, spec) {
-        return Verified(API.REFrameworkPluginInitializeParam, spec).init(self.param.native);
+    ) !VerifiedParam(spec) {
+        return VerifiedParam(spec).init(self.param.native);
     }
 
     pub inline fn verifiedSdk(

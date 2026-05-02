@@ -2,66 +2,45 @@ const re = @import("reframework");
 
 const interop = re.interop;
 
-pub const PlayerEquipment = interop.ManagedObject("app.PlayerEquipment", .{
-    .consumeLoading = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-    },
-}, .{});
+pub const PlayerEquipment = interop.ManagedObjectTypeBuilder("app.PlayerEquipment")
+    .Method(.consumeLoading, void, null)
+    .Param("System.Int32", i32, null)
+    .Build();
 
-pub const HitPoint = interop.ManagedObject("app.HitPoint", .{
-    .set_Invincible = .{
-        .params = .{
-            .{ .type_name = "System.Boolean", .type = bool },
-        },
-    },
-    .get_CurrentMaximumHitPoint = .{
-        .params = .{},
-        .ret = .{ .type = i32 },
-    },
-    .get_CurrentHitPoint = .{
-        .params = .{},
-        .ret = .{ .type = i32 },
-    },
-    .resetHitPoint = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-    },
-}, .{});
+pub const HitPoint = interop.ManagedObjectTypeBuilder("app.HitPoint")
+    .Method(.set_Invincible, void, null)
+    .Param("System.Boolean", bool, null)
+    .Method(.get_CurrentMaximumHitPoint, i32, null)
+    .Method(.get_CurrentHitPoint, i32, null)
+    .Method(.resetHitPoint, void, null)
+    .Param("System.Int32", i32, null)
+    .Build();
 
-pub const PlayerContext = interop.ManagedObject("app.PlayerContext", .{
-    .get_HitPoint = .{
-        .params = .{},
-        .ret = .{ .type = HitPoint },
-    },
-}, .{});
+pub const PlayerContext = interop.ManagedObjectTypeBuilder("app.PlayerContext")
+    .Method(.get_HitPoint, HitPoint, null)
+    .Build();
 
-pub const CharacterManager = interop.ManagedObject("app.CharacterManager", .{
-    .getPlayerContextRef = .{
-        .params = .{},
-        .ret = .{ .type = ?PlayerContext },
-    },
-}, .{});
+pub const CharacterManager = interop.ManagedObjectTypeBuilder("app.CharacterManager")
+    .Method(.getPlayerContextRef, ?PlayerContext, null)
+    .Build();
 
-pub const ItemManager = interop.ManagedObject("app.ItemManager", .{}, .{
-    ._InfinityGun = .{ .type = bool },
-    ._InfinityAxe = .{ .type = bool },
-    ._InfinityRocketLauncher = .{ .type = bool },
-});
+pub const ItemManager = interop.ManagedObjectTypeBuilder("app.ItemManager")
+    .Field(._InfinityGun, bool, null, null)
+    .Field(._InfinityAxe, bool, null, null)
+    .Field(._InfinityRocketLauncher, bool, null, null)
+    .Build();
 
-pub const AchievementManager = interop.ManagedObject("app.AchievementManager", .{}, .{
-    ._TotalClearPoint = .{ .type = u64 },
-});
+pub const AchievementManager = interop.ManagedObjectTypeBuilder("app.AchievementManager")
+    .Field(._TotalClearPoint, u64, null, null)
+    .Build();
 
-pub const InvenotryUser = interop.ManagedObject("app.InventoryUser", .{}, .{
-    .User00 = .{ .type = .self },
-    .User01 = .{ .type = .self },
-    .User02 = .{ .type = .self },
-    .User03 = .{ .type = .self },
-    .None = .{ .type = .self },
-});
+pub const InvenotryUser = interop.ManagedObjectTypeBuilder("app.InventoryUser")
+    .Field(.User00, interop.ManagedObjectSelf, null, null)
+    .Field(.User01, interop.ManagedObjectSelf, null, null)
+    .Field(.User02, interop.ManagedObjectSelf, null, null)
+    .Field(.User03, interop.ManagedObjectSelf, null, null)
+    .Field(.None, interop.ManagedObjectSelf, null, null)
+    .Build();
 
 pub const InventoryType = enum(c_int) {
     hand = 0,
@@ -69,22 +48,14 @@ pub const InventoryType = enum(c_int) {
     shareitembox = 2,
 };
 
-pub const Inventory = interop.ManagedObject("app.Inventory", .{
-    .mergeMoneys = .{
-        .params = .{
-            .{ .type_name = "System.Int32", .type = i32 },
-        },
-    },
-}, .{
-    ._Moneys = .{ .type = i32 },
-});
+pub const Inventory = interop.ManagedObjectTypeBuilder("app.Inventory")
+    .Method(.mergeMoneys, void, null)
+    .Param("System.Int32", i32, null)
+    .Field(._Moneys, i32, null, null)
+    .Build();
 
-pub const InventoryManager = interop.ManagedObject("app.InventoryManager", .{
-    .getInventory = .{
-        .params = .{
-            .{ .type_name = "app.InventoryUser", .type = InvenotryUser },
-            .{ .type_name = "app.InventoryType", .type = InventoryType },
-        },
-        .ret = .{ .type = ?Inventory },
-    },
-}, .{});
+pub const InventoryManager = interop.ManagedObjectTypeBuilder("app.InventoryManager")
+    .Method(.getInventory, ?Inventory, null)
+    .Param("app.InventoryUser", InvenotryUser, null)
+    .Param("app.InventoryType", InventoryType, null)
+    .Build();

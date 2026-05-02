@@ -13,17 +13,36 @@ const windows = std.os.windows;
 
 const d3d = re.d3d;
 
-const State = struct {
-    api: re.api.Api,
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    hwnd: windows.HWND,
-    renderer_type: re.api.RendererType,
-};
+const g = struct {
+    var api: re.api.Api = undefined;
+    var allocator: std.mem.Allocator = undefined;
+    var io: std.Io = undefined;
+    var hwnd: windows.HWND = undefined;
+    var renderer_type: re.api.RendererType = undefined;
+    var param: re.api.VerifiedParam(.{ .renderer_data = .{.renderer_type} }) = undefined;
 
-var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-var threaded: std.Io.Threaded = undefined;
-var g_state: State = undefined;
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+    var threaded: std.Io.Threaded = undefined;
+
+    fn init(init_api: re.Api) !void {
+        api = init_api;
+
+        param = try api.verifiedParam(.{ .renderer_data = .{.renderer_type} });
+        renderer_type = .fromU32(@intCast(param.safe().renderer_data.safe().renderer_type));
+    }
+
+    fn attach() void {
+        threaded = .init(debug_allocator.allocator(), .{});
+        allocator = debug_allocator.allocator();
+        io = threaded.io();
+    }
+
+    fn reset() void {
+        threaded.deinit();
+        _ = debug_allocator.detectLeaks();
+        _ = debug_allocator.deinit();
+    }
+};
 
 pub fn pluginLog(
     comptime message_level: std.log.Level,
@@ -32,16 +51,16 @@ pub fn pluginLog(
     args: anytype,
 ) void {
     const log_msg = std.fmt.allocPrintSentinel(
-        g_state.allocator,
+        g.allocator,
         (if (scope != .default) ("(" ++ @tagName(scope) ++ "): ") else "") ++ format,
         args,
         0,
     ) catch return;
-    defer g_state.allocator.free(log_msg);
+    defer g.allocator.free(log_msg);
     switch (message_level) {
-        .err => g_state.api.logError("%s", .{log_msg.ptr}),
-        .warn => g_state.api.logWarn("%s", .{log_msg.ptr}),
-        else => g_state.api.logInfo("%s", .{log_msg.ptr}),
+        .err => g.api.logError("%s", .{log_msg.ptr}),
+        .warn => g.api.logWarn("%s", .{log_msg.ptr}),
+        else => g.api.logInfo("%s", .{log_msg.ptr}),
     }
 }
 
@@ -52,7 +71,7 @@ pub const std_options: std.Options = .{
 const log = std.log.scoped(.re_imgui_custom);
 
 fn init(api: re.Api) !void {
-    g_state.api = api;
+    g.api = api;
 
     log.info(
         "RE ImGui example with custom renderer! Required REFramework Version: {}.{}.{}",
@@ -85,21 +104,17 @@ fn initImGui() !void {
     cimgui.igGetIO().*.IniFilename = "re_imgui_custom.ini";
     cimgui.igGetIO().*.ConfigFlags |= cimgui.ImGuiConfigFlags_NoMouseCursorChange;
 
-    const param = try g_state.api.verifiedParam(.{ .renderer_data = .{.renderer_type} });
-
-    g_state.renderer_type = .fromU32(@intCast(param.safe().renderer_data.safe().renderer_type));
-
-    switch (g_state.renderer_type) {
+    switch (g.renderer_type) {
         .d3d11 => {
-            var d3d11: d3d.D3D11 = .init(try d3d.D3D11.VerifiedParam.init(param.native));
-            g_state.hwnd = (try d3d11.getHwnd()) orelse return error.GetHwndFailed;
-            if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
+            var d3d11: d3d.D3D11 = .init(try d3d.D3D11.VerifiedParam.init(g.param.native));
+            g.hwnd = (try d3d11.getHwnd()) orelse return error.GetHwndFailed;
+            if (!imgui_c.ImGui_ImplWin32_Init(g.hwnd)) return error.ImGuiW32InitFailed;
             try d3d11_imgui_render.init(d3d11);
         },
         .d3d12 => {
-            var d3d12: d3d.D3D12 = .init(try d3d.D3D12.VerifiedParam.init(param.native));
-            g_state.hwnd = (try d3d12.getHwnd()) orelse return error.GetHwndFailed;
-            if (!imgui_c.ImGui_ImplWin32_Init(g_state.hwnd)) return error.ImGuiW32InitFailed;
+            var d3d12: d3d.D3D12 = .init(try d3d.D3D12.VerifiedParam.init(g.param.native));
+            g.hwnd = (try d3d12.getHwnd()) orelse return error.GetHwndFailed;
+            if (!imgui_c.ImGui_ImplWin32_Init(g.hwnd)) return error.ImGuiW32InitFailed;
             try d3d12_imgui_render.init(d3d12);
         },
         else => return,
@@ -121,7 +136,7 @@ fn drawUI() void {
 
     cimgui.igText("This is a basic demostration of a REFramework plugin written in Zig.");
     cimgui.igText("This example uses a custom ImGui renderer, we initialize ImGui ourselves and render in the onPresent callback.");
-    cimgui.igText("Current Renderer Backend: %s", @as([*:0]const u8, switch (g_state.renderer_type) {
+    cimgui.igText("Current Renderer Backend: %s", @as([*:0]const u8, switch (g.renderer_type) {
         .d3d11 => "D3D11",
         .d3d12 => "D3D12",
         else => "Unknown",
@@ -134,7 +149,7 @@ fn drawUI() void {
 
 fn onNewFrame() !void {
     // only draw UI when the main Plugin Menu is being drawn.
-    if (!g_state.api.isDrawingUI()) {
+    if (!g.api.isDrawingUI()) {
         return;
     }
 
@@ -144,7 +159,7 @@ fn onNewFrame() !void {
         return;
     }
 
-    if (g_state.renderer_type == .d3d11) {
+    if (g.renderer_type == .d3d11) {
         imgui_c.ImGui_ImplDX11_NewFrame();
         imgui_c.ImGui_ImplWin32_NewFrame();
 
@@ -156,7 +171,7 @@ fn onNewFrame() !void {
         cimgui.igRender();
 
         try d3d11_imgui_render.render();
-    } else if (g_state.renderer_type == .d3d12) {
+    } else if (g.renderer_type == .d3d12) {
         imgui_c.ImGui_ImplDX12_NewFrame();
         imgui_c.ImGui_ImplWin32_NewFrame();
 
@@ -252,7 +267,7 @@ fn onDeviceReset() void {
     log.info("Device reset detected, shutting down ImGui", .{});
 
     imgui_initialized = false;
-    switch (g_state.renderer_type) {
+    switch (g.renderer_type) {
         .d3d11 => {
             imgui_c.ImGui_ImplDX11_Shutdown();
             d3d11_imgui_render.deinit();
@@ -264,9 +279,7 @@ fn onDeviceReset() void {
         else => {},
     }
 
-    threaded.deinit();
-    _ = debug_allocator.detectLeaks();
-    _ = debug_allocator.deinit();
+    g.reset();
 }
 
 comptime {
@@ -277,7 +290,7 @@ comptime {
     });
 }
 
-pub fn DllMain(
+pub export fn DllMain(
     hinstDLL: windows.HINSTANCE,
     fdwReason: windows.DWORD,
     lpReserved: windows.LPVOID,
@@ -287,12 +300,9 @@ pub fn DllMain(
 
     switch (fdwReason) {
         win32.system.system_services.DLL_PROCESS_ATTACH => {
-            g_state.allocator = debug_allocator.allocator();
-            threaded = .init(g_state.allocator, .{});
-            g_state.io = threaded.io();
-
-            d3d11_imgui_render.g_state.io = g_state.io;
-            d3d12_imgui_render.g_state.io = g_state.io;
+            g.attach();
+            d3d11_imgui_render.g.io = g.io;
+            d3d12_imgui_render.g.io = g.io;
         },
         win32.system.system_services.DLL_PROCESS_DETACH => {},
         else => {},

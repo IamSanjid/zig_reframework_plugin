@@ -11,17 +11,38 @@ const windows = std.os.windows;
 
 const interop = re.interop;
 
-const State = struct {
-    api: re.api.Api,
-    sdk: re.api.VerifiedSdk(re.api.specs.minimal.sdk),
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    interop_cache: interop.ManagedTypeCache,
-};
+const g = struct {
+    var allocator: std.mem.Allocator = undefined;
+    var io: std.Io = undefined;
+    var interop_cache: interop.ManagedTypeCache = undefined;
+    var api: re.Api = undefined;
+    var sdk: re.api.VerifiedSdk(re.api.specs.minimal.sdk) = undefined;
+    var hack_scope: interop.Scope = undefined;
 
-var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-var threaded: std.Io.Threaded = undefined;
-var g_state: State = undefined;
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+    var threaded: std.Io.Threaded = undefined;
+
+    fn init(init_api: re.Api) !void {
+        api = init_api;
+        sdk = try api.verifiedSdk(re.api.specs.minimal.sdk);
+        hack_scope = interop_cache.newScope(allocator);
+    }
+
+    fn attach() void {
+        threaded = .init(debug_allocator.allocator(), .{});
+        allocator = debug_allocator.allocator();
+        io = threaded.io();
+        interop_cache = .init(debug_allocator.allocator(), io);
+    }
+
+    fn reset() void {
+        interop_cache.deinit();
+
+        threaded.deinit();
+        _ = debug_allocator.detectLeaks();
+        _ = debug_allocator.deinit();
+    }
+};
 
 pub fn pluginLog(
     comptime message_level: std.log.Level,
@@ -30,16 +51,16 @@ pub fn pluginLog(
     args: anytype,
 ) void {
     const log_msg = std.fmt.allocPrintSentinel(
-        g_state.allocator,
+        g.allocator,
         (if (scope != .default) ("(" ++ @tagName(scope) ++ "): ") else "") ++ format,
         args,
         0,
     ) catch return;
-    defer g_state.allocator.free(log_msg);
+    defer g.allocator.free(log_msg);
     switch (message_level) {
-        .err => g_state.api.logError("%s", .{log_msg.ptr}),
-        .warn => g_state.api.logWarn("%s", .{log_msg.ptr}),
-        else => g_state.api.logInfo("%s", .{log_msg.ptr}),
+        .err => g.api.logError("%s", .{log_msg.ptr}),
+        .warn => g.api.logWarn("%s", .{log_msg.ptr}),
+        else => g.api.logInfo("%s", .{log_msg.ptr}),
     }
 }
 
@@ -61,7 +82,7 @@ const Inventory = managed_types.Inventory;
 const InventoryManager = managed_types.InventoryManager;
 
 fn init(api: re.Api) !void {
-    g_state.api = api;
+    try g.init(api);
 
     log.info(
         "RE9 Basic Hacks in Zig! Required REFramework Version: {}.{}.{}",
@@ -72,12 +93,12 @@ fn init(api: re.Api) !void {
         },
     );
 
-    g_state.sdk = try g_state.api.verifiedSdk(re.api.specs.minimal.sdk);
+    g.sdk = try g.api.verifiedSdk(re.api.specs.minimal.sdk);
 
-    const PlayerEquipmentRuntimeT = try PlayerEquipment.Runtime.get(&g_state.interop_cache, .fo(g_state.sdk));
+    const PlayerEquipmentRuntimeT = try PlayerEquipment.Runtime.get(&g.interop_cache, .fo(g.sdk));
     const consumeLoading = PlayerEquipmentRuntimeT.getMethod(.consumeLoading);
     const consume_loading_hook = consumeLoading.addHook(
-        .fromOther(g_state.sdk.safe().functions),
+        .fromOther(g.sdk.safe().functions),
         struct {
             fn func(args: ?[]?*anyopaque, arg_types: ?[]re.api.sdk.TypeDefinition, ret_addr: u64) re.api.HookCall {
                 _ = args;
@@ -111,42 +132,42 @@ const Hack = struct {
 var old_hack_state: ?Hack = null;
 var current_hack_state: Hack = .{};
 
-fn applyHPHack() !void {
+fn applyHPHack(scope: *interop.Scope) !void {
     if (!current_hack_state.invincible) {
         return;
     }
     const char_mgr = try CharacterManager.init(
-        &g_state.interop_cache,
-        .fo(g_state.sdk),
-        re.api.sdk.getManagedSingleton(.fo(g_state.sdk), CharacterManager.fullTypeName()) orelse return,
+        &g.interop_cache,
+        .fo(g.sdk),
+        re.api.sdk.getManagedSingleton(.fo(g.sdk), CharacterManager.fullTypeName()) orelse return,
     );
-    const player_context = (try char_mgr.call(.getPlayerContextRef, .fo(g_state.sdk), .{})) orelse return;
-    const hit_point = try player_context.call(.get_HitPoint, .fo(g_state.sdk), .{});
+    const player_context = (try char_mgr.call(.getPlayerContextRef, scope, .fo(g.sdk), .{})) orelse return;
+    const hit_point = try player_context.call(.get_HitPoint, scope, .fo(g.sdk), .{});
 
-    try hit_point.call(.set_Invincible, .fo(g_state.sdk), .{true});
+    try hit_point.call(.set_Invincible, scope, .fo(g.sdk), .{true});
 
-    const max_hp = try hit_point.call(.get_CurrentMaximumHitPoint, .fo(g_state.sdk), .{});
-    const cur_hp = try hit_point.call(.get_CurrentHitPoint, .fo(g_state.sdk), .{});
+    const max_hp = try hit_point.call(.get_CurrentMaximumHitPoint, scope, .fo(g.sdk), .{});
+    const cur_hp = try hit_point.call(.get_CurrentHitPoint, scope, .fo(g.sdk), .{});
     if (max_hp > 0 and cur_hp < max_hp) {
-        try hit_point.call(.resetHitPoint, .fo(g_state.sdk), .{max_hp});
+        try hit_point.call(.resetHitPoint, scope, .fo(g.sdk), .{max_hp});
     }
     // log.info("Hacked Infinite HP! HP: {}/{}", .{ cur_hp, max_hp });
     // hacked_hp = true;
 }
 
-fn applyInfiniteAmmoHack() !void {
+fn applyInfiniteAmmoHack(scope: *interop.Scope) !void {
     const item_mgr = try ItemManager.init(
-        &g_state.interop_cache,
-        .fo(g_state.sdk),
+        &g.interop_cache,
+        .fo(g.sdk),
         re.api.sdk.getManagedSingleton(
-            .fo(g_state.sdk),
+            .fo(g.sdk),
             ItemManager.fullTypeName(),
         ) orelse return,
     );
 
-    const infinite_gun = try item_mgr.get(._InfinityGun, .fo(g_state.sdk));
-    const infinite_axe = try item_mgr.get(._InfinityAxe, .fo(g_state.sdk));
-    const infinite_rocket = try item_mgr.get(._InfinityRocketLauncher, .fo(g_state.sdk));
+    const infinite_gun = try item_mgr.get(._InfinityGun, scope, .fo(g.sdk));
+    const infinite_axe = try item_mgr.get(._InfinityAxe, scope, .fo(g.sdk));
+    const infinite_rocket = try item_mgr.get(._InfinityRocketLauncher, scope, .fo(g.sdk));
 
     if (old_hack_state == null) {
         old_hack_state = .{
@@ -168,68 +189,69 @@ fn applyInfiniteAmmoHack() !void {
         current_hack_state.infinite_rocket = old_hack_state.?.infinite_rocket;
 
     if (infinite_gun != current_hack_state.infinite_gun) {
-        try item_mgr.set(._InfinityGun, .fo(g_state.sdk), current_hack_state.infinite_gun);
+        try item_mgr.set(._InfinityGun, scope, .fo(g.sdk), current_hack_state.infinite_gun);
     }
 
     if (infinite_axe != current_hack_state.infinite_axe) {
-        try item_mgr.set(._InfinityAxe, .fo(g_state.sdk), current_hack_state.infinite_axe);
+        try item_mgr.set(._InfinityAxe, scope, .fo(g.sdk), current_hack_state.infinite_axe);
     }
 
     if (infinite_rocket != current_hack_state.infinite_rocket) {
-        try item_mgr.set(._InfinityRocketLauncher, .fo(g_state.sdk), current_hack_state.infinite_rocket);
+        try item_mgr.set(._InfinityRocketLauncher, scope, .fo(g.sdk), current_hack_state.infinite_rocket);
     }
 
-    //infinite_gun = try item_mgr.get(._InfinityGun, .fo(g_state.sdk));
-    //infinite_axe = try item_mgr.get(._InfinityAxe, .fo(g_state.sdk));
-    //infinite_rocket = try item_mgr.get(._InfinityRocketLauncher, .fo(g_state.sdk));
+    //infinite_gun = try item_mgr.get(._InfinityGun, scope, .fo(g.sdk));
+    //infinite_axe = try item_mgr.get(._InfinityAxe, scope, .fo(g.sdk));
+    //infinite_rocket = try item_mgr.get(._InfinityRocketLauncher, scope, .fo(g.sdk));
     // hacked_ammo = infinite_gun and infinite_axe and infinite_rocket;
     // if (hacked_ammo) {
     //     log.info("Hacked Infinite Ammo!", .{});
     // }
 }
 
-fn applyCPHack() !void {
+fn applyCPHack(scope: *interop.Scope) !void {
     const achievement_mgr = try AchievementManager.init(
-        &g_state.interop_cache,
-        .fo(g_state.sdk),
+        &g.interop_cache,
+        .fo(g.sdk),
         re.api.sdk.getManagedSingleton(
-            .fo(g_state.sdk),
+            .fo(g.sdk),
             AchievementManager.fullTypeName(),
         ) orelse return,
     );
-    const current_cp = try achievement_mgr.get(._TotalClearPoint, .fo(g_state.sdk));
+    const current_cp = try achievement_mgr.get(._TotalClearPoint, scope, .fo(g.sdk));
     if (current_hack_state.cp == 0 and current_cp > 0) {
         if (old_hack_state) |*old_state| {
             old_state.*.cp = current_cp;
         }
         current_hack_state.cp = current_cp;
     } else if (current_hack_state.cp != current_cp) {
-        try achievement_mgr.set(._TotalClearPoint, .fo(g_state.sdk), current_hack_state.cp);
+        try achievement_mgr.set(._TotalClearPoint, scope, .fo(g.sdk), current_hack_state.cp);
     }
 }
 
-fn addCreditStockHack(amount: i32) !void {
-    const InventoryUserT = try InventoryUser.Runtime.get(&g_state.interop_cache, .fo(g_state.sdk));
-    const user01 = InventoryUserT.getStatic(.User01, .fo(g_state.sdk)) catch return;
+fn addCreditStockHack(scope: *interop.Scope, amount: i32) !void {
+    const InventoryUserT = try InventoryUser.Runtime.get(&g.interop_cache, .fo(g.sdk));
+    const user01 = InventoryUserT.getStatic(.User01, scope, .fo(g.sdk)) catch return;
     const inventory_mgr = try InventoryManager.init(
-        &g_state.interop_cache,
-        .fo(g_state.sdk),
+        &g.interop_cache,
+        .fo(g.sdk),
         re.api.sdk.getManagedSingleton(
-            .fo(g_state.sdk),
+            .fo(g.sdk),
             InventoryManager.fullTypeName(),
         ) orelse return,
     );
     const inventory = (try inventory_mgr.call(
         .getInventory,
-        .fo(g_state.sdk),
+        scope,
+        .fo(g.sdk),
         .{ user01, InventoryType.hand },
     )) orelse return;
 
-    const current_credit_stock = inventory.get(._Moneys, .fo(g_state.sdk)) catch return;
+    const current_credit_stock = inventory.get(._Moneys, scope, .fo(g.sdk)) catch return;
     if (@addWithOverflow(current_credit_stock, amount).@"1" == 1) {
         return error.CreditStockOverflow;
     }
-    try inventory.call(.mergeMoneys, .fo(g_state.sdk), .{amount});
+    try inventory.call(.mergeMoneys, scope, .fo(g.sdk), .{amount});
 }
 
 const cimgui_dll = struct {
@@ -326,9 +348,11 @@ fn drawUI() !void {
         _ = cimgui_dll.igInputScalar("##cp", cimgui.ImGuiDataType_U64, &current_hack_state.cp, &cp_step, &cp_step_fast, "%llu", 0);
         cimgui_dll.igSameLine(0, 10);
         if (cimgui_dll.igButton("Apply CP", .{})) {
-            g_state.api.lockLua();
-            defer g_state.api.unlockLua();
-            try applyCPHack();
+            g.api.lockLua();
+            defer g.api.unlockLua();
+            var scope = g.interop_cache.newScope(g.allocator);
+            defer scope.deinit();
+            try applyCPHack(&scope);
         }
     }
     {
@@ -347,31 +371,33 @@ fn drawUI() !void {
         );
         cimgui_dll.igSameLine(0, 10);
         if (cimgui_dll.igButton("Add", .{})) {
-            g_state.api.lockLua();
-            defer g_state.api.unlockLua();
-            try addCreditStockHack(current_hack_state.add_credit_stock);
+            g.api.lockLua();
+            defer g.api.unlockLua();
+            var scope = g.interop_cache.newScope(g.allocator);
+            defer scope.deinit();
+            try addCreditStockHack(&scope, current_hack_state.add_credit_stock);
         }
     }
 }
 
 fn onNewFrame() !void {
     {
-        g_state.api.lockLua();
-        defer g_state.api.unlockLua();
+        g.api.lockLua();
+        defer g.api.unlockLua();
 
         if (old_hack_state == null) {
             // this will get the current CP value and store it.
-            try applyCPHack();
+            try applyCPHack(&g.hack_scope);
         }
 
-        try applyHPHack();
-        try applyInfiniteAmmoHack();
+        try applyHPHack(&g.hack_scope);
+        try applyInfiniteAmmoHack(&g.hack_scope);
     }
 }
 
 fn onUpdate() void {
     onNewFrame() catch |e| {
-        if (g_state.interop_cache.ownDiagnostics()) |val| {
+        if (g.interop_cache.ownDiagnostics()) |val| {
             if (val.len > 0) {
                 log.err("Interop error: \n{s}", .{val});
             }
@@ -383,10 +409,7 @@ fn onUpdate() void {
 fn onDeviceReset() void {
     log.info("Device reset detected, clearing interop cache", .{});
 
-    g_state.interop_cache.deinit();
-    threaded.deinit();
-    _ = debug_allocator.detectLeaks();
-    _ = debug_allocator.deinit();
+    g.reset();
 }
 
 comptime {
@@ -422,7 +445,7 @@ comptime {
     });
 }
 
-pub fn DllMain(
+pub export fn DllMain(
     hinstDLL: windows.HINSTANCE,
     fdwReason: windows.DWORD,
     lpReserved: windows.LPVOID,
@@ -432,12 +455,11 @@ pub fn DllMain(
 
     switch (fdwReason) {
         win32.system.system_services.DLL_PROCESS_ATTACH => {
-            g_state.allocator = debug_allocator.allocator();
-            threaded = .init(g_state.allocator, .{});
-            g_state.io = threaded.io();
-            g_state.interop_cache = .init(g_state.allocator, g_state.io);
+            g.attach();
         },
-        win32.system.system_services.DLL_PROCESS_DETACH => {},
+        win32.system.system_services.DLL_PROCESS_DETACH => {
+            g.reset();
+        },
         else => {},
     }
 
