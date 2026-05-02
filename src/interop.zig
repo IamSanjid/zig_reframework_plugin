@@ -373,7 +373,7 @@ pub const Scope = struct {
             }
         }
 
-        var built_args = try buildMethodArgs(@constCast(&sdk), self, method_metadata, args, param_interops);
+        var built_args = try buildMethodArgs(&sdk, self, method_metadata, args, param_interops);
 
         const managed: api.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(obj)) };
         var invoke_res: api.InvokeRet = .{};
@@ -388,7 +388,7 @@ pub const Scope = struct {
         // TODO: Use type full name?
         if (ret.type == f32 and !@hasField(@TypeOf(ret), "interop")) {
             return @floatCast(try defaultToZigInterop(f64)(
-                @constCast(&sdk),
+                &sdk,
                 self,
                 method_metadata.ret_type_def,
                 p,
@@ -400,7 +400,7 @@ pub const Scope = struct {
                 defaultToZigInterop(ret.type);
 
             return try retInterop(
-                @constCast(&sdk),
+                &sdk,
                 self,
                 method_metadata.ret_type_def,
                 p,
@@ -431,7 +431,7 @@ pub const Scope = struct {
         )));
 
         const getInterop = interop orelse defaultToZigInterop(T);
-        return getInterop(@constCast(&sdk), self, field_metadata.type_def, data_read_ptr);
+        return getInterop(&sdk, self, field_metadata.type_def, data_read_ptr);
     }
 
     pub fn writeField(
@@ -466,7 +466,7 @@ pub const Scope = struct {
         )));
 
         const setInterop = interop orelse defaultFromZigInterop;
-        return setInterop(@constCast(&sdk), self, field_metadata.type_def, value, data_write_ptr);
+        return setInterop(&sdk, self, field_metadata.type_def, value, data_write_ptr);
     }
 
     pub fn getFieldFromTypeDef(
@@ -1378,35 +1378,23 @@ pub const SystemStringView = struct {
     data: [:0]const u16,
 };
 
-pub const FromZigInterop = fn (
-    userdata: ?*anyopaque,
-    scope: *Scope,
-    to_type_def: api.sdk.TypeDefinition,
-    arg: anytype,
-    out: *?*anyopaque,
-) anyerror!void;
+pub const FromZigInterop = @TypeOf(defaultFromZigInterop);
 
 pub fn ToZigInterop(comptime T: type) type {
-    return fn (
-        userdata: ?*anyopaque,
-        scope: *Scope,
-        from_type_def: api.sdk.TypeDefinition,
-        data: *?*anyopaque,
-    ) anyerror!T;
+    return @TypeOf(defaultToZigInterop(T));
 }
 
 // TODO: Implement more cases:
 // https://github.com/praydog/REFramework/blob/ea66d322fbe2ebb7e2efd8fd6aa6b06779da6f76/src/mods/bindings/Sdk.cpp#L1086
 pub fn defaultFromZigInterop(
-    userdata: ?*anyopaque,
+    sdk_ptr: *const anyopaque,
     scope: *Scope,
     to_type_def: api.sdk.TypeDefinition,
     arg: anytype,
     out: *?*anyopaque,
 ) anyerror!void {
     @setRuntimeSafety(false);
-    const sdk_ptr: *ManagedSdk = @ptrCast(@alignCast(userdata));
-    const sdk = sdk_ptr.*;
+    const sdk: *const ManagedSdk = @ptrCast(@alignCast(sdk_ptr));
 
     const ArgT = @TypeOf(arg);
     switch (ArgT) {
@@ -1441,7 +1429,7 @@ pub fn defaultFromZigInterop(
             return;
         },
         SystemStringView => {
-            return defaultFromZigInterop(userdata, scope, to_type_def, arg.data, out);
+            return defaultFromZigInterop(sdk_ptr, scope, to_type_def, arg.data, out);
         },
         ?api.sdk.ManagedObject => {
             if (arg) |v| {
@@ -1524,7 +1512,7 @@ pub fn defaultFromZigInterop(
                 @as(c_int, @intFromEnum(arg))
             else
                 @intFromEnum(arg);
-            return defaultFromZigInterop(userdata, scope, to_type_def, enum_val, out);
+            return defaultFromZigInterop(sdk_ptr, scope, to_type_def, enum_val, out);
         },
         .@"struct" => {
             @compileError("Cannot interop zig struct");
@@ -1535,7 +1523,7 @@ pub fn defaultFromZigInterop(
             }
 
             if (arg) |v| {
-                try defaultFromZigInterop(userdata, scope, to_type_def, v, out);
+                try defaultFromZigInterop(sdk_ptr, scope, to_type_def, v, out);
             } else {
                 out.* = null;
             }
@@ -1607,10 +1595,10 @@ pub const SystemArrayEntries = struct {
 
 // TODO: Implement more cases:
 // https://github.com/praydog/REFramework/blob/ea66d322fbe2ebb7e2efd8fd6aa6b06779da6f76/src/mods/bindings/Sdk.cpp#L927
-pub fn defaultToZigInterop(RetType: type) fn (?*anyopaque, *Scope, api.sdk.TypeDefinition, *?*anyopaque) anyerror!RetType {
+pub fn defaultToZigInterop(RetType: type) fn (*const anyopaque, *Scope, api.sdk.TypeDefinition, *?*anyopaque) anyerror!RetType {
     return struct {
         fn func(
-            userdata: ?*anyopaque,
+            sdk_ptr: *const anyopaque,
             scope: *Scope,
             from_type_def: api.sdk.TypeDefinition,
             data: *?*anyopaque,
@@ -1619,18 +1607,17 @@ pub fn defaultToZigInterop(RetType: type) fn (?*anyopaque, *Scope, api.sdk.TypeD
             // _ = from_type_def;
             if (RetType == void) return {};
 
-            const sdk_ptr: *ManagedSdk = @ptrCast(@alignCast(userdata));
-            const sdk = sdk_ptr.*;
+            const sdk: *const ManagedSdk = @ptrCast(@alignCast(sdk_ptr));
 
             switch (RetType) {
                 []const u8, []u8 => {
                     @compileError("Please consider using SystemStringView type, and later convert it to u8 your own way.");
                 },
                 [:0]u16 => {
-                    return (try defaultToZigInterop(SystemStringView)).data;
+                    return (try defaultToZigInterop(SystemStringView)(sdk_ptr, scope, from_type_def, data)).data;
                 },
                 [*:0]u16 => {
-                    return (try defaultToZigInterop(SystemStringView)).data.ptr;
+                    return (try defaultToZigInterop(SystemStringView)(sdk_ptr, scope, from_type_def, data)).data.ptr;
                 },
                 SystemStringView => {
                     if (comptime isSafeMode()) {
@@ -1672,7 +1659,7 @@ pub fn defaultToZigInterop(RetType: type) fn (?*anyopaque, *Scope, api.sdk.TypeD
                             return error.ExpectedValueType;
                         }
                     }
-                    return try ValueType.init(scope.arena.allocator(), sdk, data, from_type_def);
+                    return try ValueType.init(scope.arena.allocator(), sdk.*, data, from_type_def);
                 },
                 else => {},
             }
@@ -1689,7 +1676,7 @@ pub fn defaultToZigInterop(RetType: type) fn (?*anyopaque, *Scope, api.sdk.TypeD
                 const ptr: ?*anyopaque = data.*;
                 if (ptr == null) return error.ReturnedUnexpectedNull;
                 const obj: api.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(ptr)) };
-                return try RetType.init(scope.cache, sdk, obj);
+                return try RetType.init(scope.cache, sdk.*, obj);
             } else switch (ret_t_info) {
                 .int => {
                     const b: [*]const u8 = @ptrCast(data);
@@ -1712,7 +1699,7 @@ pub fn defaultToZigInterop(RetType: type) fn (?*anyopaque, *Scope, api.sdk.TypeD
                 .@"enum" => {
                     // TODO: use the actual underlying type of the enum, `getUnderlyingType`
                     const EnumUnderlyingT = if (@sizeOf(ret_t_info.@"enum".tag_type) < @sizeOf(c_int)) c_int else ret_t_info.@"enum".tag_type;
-                    return @enumFromInt(try defaultToZigInterop(EnumUnderlyingT)(userdata, scope, from_type_def, data));
+                    return @enumFromInt(try defaultToZigInterop(EnumUnderlyingT)(sdk_ptr, scope, from_type_def, data));
                 },
                 .optional => |o| {
                     if (@typeInfo(o.child) != .@"struct" and @typeInfo(o.child) != .pointer) {
@@ -1721,7 +1708,7 @@ pub fn defaultToZigInterop(RetType: type) fn (?*anyopaque, *Scope, api.sdk.TypeD
                     const ptr: ?*anyopaque = data.*;
                     if (ptr == null) return null;
 
-                    return try defaultToZigInterop(o.child)(userdata, scope, from_type_def, data);
+                    return try defaultToZigInterop(o.child)(sdk_ptr, scope, from_type_def, data);
                 },
                 .pointer => {
                     return @ptrCast(@alignCast(data.*));
@@ -1836,39 +1823,8 @@ inline fn buildMethodSignatureParams(comptime method_name: [:0]const u8, comptim
     };
 }
 
-fn buildMethodArgsFromData(
-    Data: type,
-    userdata: ?*anyopaque,
-    scope: *Scope,
-    method_metadata: *const MethodMetadata,
-    args: anytype,
-) anyerror![std.meta.fields(@TypeOf(args)).len]?*anyopaque {
-    const args_len = std.meta.fields(@TypeOf(args)).len;
-    if (anyParamUnknown(Data.get().params)) {
-        if (comptime isSafeMode()) {
-            // TODO: Check for type interopability
-            if (method_metadata.param_type_defs.len != args_len) {
-                return error.InvalidArgsLength;
-            }
-        }
-    } else {
-        const params_len = Data.getParamsLen();
-
-        if (params_len != args_len) {
-            @compileError(std.fmt.comptimePrint("Expected args len: {d}, found: {d}", .{ params_len, args_len }));
-        }
-    }
-
-    comptime var param_interops: [args_len]FromZigInterop = undefined;
-    inline for (0..args_len) |i| {
-        param_interops[i] = Data.getParam(i).interop;
-    }
-
-    return buildMethodArgsImpl(userdata, scope, method_metadata, args, param_interops);
-}
-
 fn buildMethodArgsImpl(
-    userdata: ?*anyopaque,
+    sdk: *const anyopaque,
     scope: *Scope,
     method_metadata: *const MethodMetadata,
     args: anytype,
@@ -1885,7 +1841,7 @@ fn buildMethodArgsImpl(
             out[i] = arg.valuePtr();
         } else {
             try param_interops[i](
-                userdata,
+                sdk,
                 scope,
                 method_metadata.param_type_defs[i],
                 arg,
@@ -1898,7 +1854,7 @@ fn buildMethodArgsImpl(
 }
 
 pub inline fn buildMethodArgs(
-    userdata: ?*anyopaque,
+    sdk: *const anyopaque,
     scope: *Scope,
     method_metadata: *const MethodMetadata,
     args: anytype,
@@ -1923,7 +1879,7 @@ pub inline fn buildMethodArgs(
         }
     }
 
-    return buildMethodArgsImpl(userdata, scope, method_metadata, args, param_interop_fns);
+    return buildMethodArgsImpl(sdk, scope, method_metadata, args, param_interop_fns);
 }
 
 fn FieldData(comptime Owner: type, comptime fields: anytype, comptime field: @EnumLiteral()) type {
@@ -1954,23 +1910,23 @@ fn FieldData(comptime Owner: type, comptime fields: anytype, comptime field: @En
 fn DefaultFieldInterop(FieldType: type) type {
     return struct {
         inline fn get(
-            userdata: ?*anyopaque,
+            sdk: *const anyopaque,
             scope: *Scope,
             from_type_def: api.sdk.TypeDefinition,
             field_raw_data: *?*anyopaque,
         ) anyerror!FieldType {
             // TODO: Add more safety fences?
-            return defaultToZigInterop(FieldType)(userdata, scope, from_type_def, field_raw_data);
+            return defaultToZigInterop(FieldType)(sdk, scope, from_type_def, field_raw_data);
         }
 
         inline fn set(
-            userdata: ?*anyopaque,
+            sdk: *const anyopaque,
             scope: *Scope,
             to_type_def: api.sdk.TypeDefinition,
             value: FieldType,
             write_ptr: *?*anyopaque,
         ) anyerror!void {
-            return defaultFromZigInterop(userdata, scope, to_type_def, value, write_ptr);
+            return defaultFromZigInterop(sdk, scope, to_type_def, value, write_ptr);
         }
     };
 }
@@ -2336,12 +2292,12 @@ fn ManagedObjectTypeBuilderImpl(comptime full_type_name: [:0]const u8, comptime 
                 // TODO: Use type full name?
                 const retInterop = struct {
                     inline fn func(
-                        userdata: ?*anyopaque,
+                        sdk: *const anyopaque,
                         scope: *Scope,
                         from_type_def: api.sdk.TypeDefinition,
                         data: *?*anyopaque,
                     ) anyerror!RetType {
-                        return @floatCast(defaultToZigInterop(f64)(userdata, scope, from_type_def, data));
+                        return @floatCast(defaultToZigInterop(f64)(sdk, scope, from_type_def, data));
                     }
                 }.func;
 
@@ -2362,12 +2318,12 @@ fn ManagedObjectTypeBuilderImpl(comptime full_type_name: [:0]const u8, comptime 
                 // TODO: Use type full name?
                 const retInterop = struct {
                     inline fn func(
-                        userdata: ?*anyopaque,
+                        sdk: *const anyopaque,
                         scope: *Scope,
                         from_type_def: api.sdk.TypeDefinition,
                         data: *?*anyopaque,
                     ) anyerror!RetType {
-                        return @floatCast(defaultToZigInterop(f64)(userdata, scope, from_type_def, data));
+                        return @floatCast(defaultToZigInterop(f64)(sdk, scope, from_type_def, data));
                     }
                 }.func;
 

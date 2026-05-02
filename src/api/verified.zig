@@ -26,6 +26,11 @@ inline fn isVerified(T: type) bool {
     if (!@hasDecl(T, "SafeT") or !@hasDecl(T, "safe") or !@hasDecl(T, "safeFromOther")) {
         return false;
     }
+
+    if (!@hasField(T, "native") or !@hasField(T, "userdata")) {
+        return false;
+    }
+
     return true;
 }
 
@@ -293,7 +298,15 @@ pub fn Verified(T: type, comptime required_fields: anytype) type {
         }
 
         pub fn fromOther(other_varified: anytype) Self {
-            const Other = @TypeOf(other_varified);
+            const Other = comptime blk: {
+                const OtherT = @TypeOf(other_varified);
+                const t_info = @typeInfo(OtherT);
+                if (t_info == .pointer) {
+                    break :blk t_info.pointer.child;
+                } else {
+                    break :blk OtherT;
+                }
+            };
             if (!isVerified(Other)) {
                 @compileError("Expected a Verified type but found: '" ++ @typeName(Other) ++ "'");
             }
