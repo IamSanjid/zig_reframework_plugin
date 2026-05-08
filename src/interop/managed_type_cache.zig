@@ -116,7 +116,7 @@ pub const ManagedTypeCache = struct {
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
 
-        try self.diagnostics.print(self.value_arena, fmt ++ "\n", args);
+        try self.diagnostics.print(self.value_arena.allocator(), fmt, args);
     }
 
     /// Resolves a managed type by its name and returns its metadata, it will cache the required "metadata"

@@ -59,6 +59,9 @@ fn ManagedObject(comptime Builder: type) type {
             const Self = @This();
             pub const Runtime = ManagedObjectType;
 
+            pub const createInstance = Runtime.createInstance;
+            pub const createInstanceWithTdb = Runtime.createInstanceWithTdb;
+
             pub fn init(cache: *ManagedTypeCache, sdk: InteropSdk, managed: api.sdk.ManagedObject) !Self {
                 return checkedInit(cache, sdk, managed);
             }
@@ -75,6 +78,7 @@ fn ManagedObject(comptime Builder: type) type {
                 const Method = Builder.GetMethod(method, Instance);
 
                 const method_metadata = self.runtime.metadata.methods[Method.Id];
+                errdefer scope.cache.appendDiagnostics("method={s}", .{@tagName(method)}) catch {};
                 return scope.invokeMethod(
                     self.managed.raw,
                     method_metadata,
@@ -95,6 +99,7 @@ fn ManagedObject(comptime Builder: type) type {
             ) !Builder.GetField(field, Instance).Type {
                 const Field = Builder.GetField(field, Instance);
                 const field_metadata = self.runtime.metadata.fields[Field.Id];
+                errdefer scope.cache.appendDiagnostics("field={s}", .{@tagName(field)}) catch {};
                 return scope.readField(
                     self.managed.raw,
                     field_metadata,
@@ -115,6 +120,7 @@ fn ManagedObject(comptime Builder: type) type {
             ) !void {
                 const Field = Builder.GetField(field, Instance);
                 const field_metadata = self.runtime.metadata.fields[Field.Id];
+                errdefer scope.cache.appendDiagnostics("field={s}", .{@tagName(field)}) catch {};
                 return scope.writeField(
                     self.managed.raw,
                     field_metadata,
@@ -157,6 +163,20 @@ fn ManagedObject(comptime Builder: type) type {
 
             pub const fullTypeName = Builder.fullTypeName;
         };
+
+        pub fn createInstance(cache: *ManagedTypeCache, sdk: InteropSdk, flags: api.CreateInstanceFlags) !Instance {
+            errdefer cache.appendDiagnostics("type={s}", .{fullTypeName()}) catch {};
+            const runtime = try get(cache, sdk);
+            const managed = runtime.metadata.type_def.createInstance(.fo(sdk), flags) orelse return error.CreateInstanceFailed;
+            return runtime.instance(managed);
+        }
+
+        pub fn createInstanceWithTdb(cache: *ManagedTypeCache, sdk: InteropSdk, tdb: api.sdk.Tdb, flags: api.CreateInstanceFlags) !Instance {
+            errdefer cache.appendDiagnostics("type={s}", .{fullTypeName()}) catch {};
+            const runtime = try getWithTdb(cache, sdk, tdb);
+            const managed = runtime.metadata.type_def.createInstance(.fo(sdk), flags) orelse return error.CreateInstanceFailed;
+            return runtime.instance(managed);
+        }
 
         pub fn get(cache: *ManagedTypeCache, sdk: InteropSdk) !ManagedObjectType {
             return blk: {

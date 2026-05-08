@@ -70,6 +70,11 @@ Build all examples:
 zig build -Dexample=all
 ```
 
+Build all examples and install to `<game_path>/reframework/plugins`:
+```sh
+zig build --prefix-exe-dir "<path_to_game>/reframework/plugins" -Dexample=all
+```
+
 Run available tests:
 ```sh
 zig build test

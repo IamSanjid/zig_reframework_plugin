@@ -286,13 +286,15 @@ fn getDefaultSegmentItemSet(scope: *interop.Scope, save_mgr: re.api.sdk.ManagedO
     );
 }
 
-fn expandGamePartition(save_mgr: re.api.sdk.ManagedObject) !bool {
+fn expandGamePartition(save_mgr_mo: re.api.sdk.ManagedObject) !bool {
     var scope = g.interop_cache.newScope(g.allocator);
     defer scope.deinit();
 
-    const SaveMgrT = try g.interop_cache.resolve("app.SaveServiceManager", g.tdb, .fo(g.sdk));
+    const save_mgr = (try g.interop_cache.resolve("app.SaveServiceManager", g.tdb, .fo(g.sdk)))
+        .scoped(&scope)
+        .instanced(save_mgr_mo);
 
-    const item_set = (try getDefaultSegmentItemSet(&scope, save_mgr)) orelse return false;
+    const item_set = (try getDefaultSegmentItemSet(&scope, save_mgr_mo)) orelse return false;
     const partitions_arr = (try scope.callMethod(
         item_set,
         "toValueArray()",
@@ -345,13 +347,12 @@ fn expandGamePartition(save_mgr: re.api.sdk.ManagedObject) !bool {
     try game_partition.?.set(._SlotCount, &scope, .fo(g.sdk), max_save_games);
     log.info("Patched Game partition _SlotCount: {} -> {}", .{ game_partition_slots, max_save_games });
 
-    const old_max = try SaveMgrT.scoped(&scope).get(save_mgr, ._MaxUseSaveSlotCount, i32, .fo(g.sdk));
+    const old_max = try save_mgr.get(._MaxUseSaveSlotCount, i32, .fo(g.sdk));
     const new_max = old_max + extra_slots;
-    try SaveMgrT.scoped(&scope).set(save_mgr, ._MaxUseSaveSlotCount, .fo(g.sdk), new_max);
+    try save_mgr.set(._MaxUseSaveSlotCount, .fo(g.sdk), new_max);
     log.info("Patched _MaxUseSaveSlotCount: {} -> {}", .{ old_max, new_max });
 
-    SaveMgrT.scoped(&scope).call(
-        save_mgr,
+    save_mgr.call(
         "reloadSaveSlotInfo()",
         void,
         .fo(g.sdk),

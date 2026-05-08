@@ -30,7 +30,7 @@ const sdk_interop_specs = .{
         .{ .create_managed_string, .create_managed_string_normal },
         Scope.functions_sepcs,
     ),
-    .managed_object = Scope.managed_object_specs,
+    .managed_object = api.specs.merge(Scope.managed_object_specs, .add_ref),
     .method = Scope.method_specs,
     .field = api.specs.merge(Scope.field_specs, .get_offset_from_base),
     .type_definition = .all,
@@ -52,10 +52,19 @@ pub const ValueType = struct {
 
         const data_p: [*]u8 = @ptrCast(@alignCast(data));
         const size = type_def.getValueTypeSize(.fo(sdk));
-        const buf = try arena.alignedAlloc(u8, .of(usize), managed_object_runtime_size + size);
-        @memset(buf, 0);
+        var instance: Self = try .create(arena, .fo(sdk), type_def);
 
-        @memcpy(buf[managed_object_runtime_size..], data_p[0..size]);
+        @memcpy(instance.data[managed_object_runtime_size..], data_p[0..size]);
+
+        return instance;
+    }
+
+    pub fn create(arena: std.mem.Allocator, sdk: InteropSdk, type_def: api.sdk.TypeDefinition) !Self {
+        @setRuntimeSafety(false);
+
+        const size = type_def.getValueTypeSize(.fo(sdk));
+        const buf = try arena.alignedAlloc(u8, .of(*anyopaque), managed_object_runtime_size + size);
+        @memset(buf, 0);
 
         // REObject header: REObjectInfo* at offset 0x00
         @as(*api.sdk.TypeDefinition, @ptrCast(@alignCast(&buf[0x00]))).* = type_def;
@@ -80,8 +89,7 @@ pub const ValueType = struct {
     pub inline fn call(
         self: Self,
         sig: [:0]const u8,
-        comptime param_interops: anytype,
-        comptime ret: anytype,
+        comptime RetType: type,
         scope: *Scope,
         sdk: api.VerifiedSdk(.{
             .method = sdk_interop_specs.method,
@@ -89,13 +97,31 @@ pub const ValueType = struct {
             .type_definition = .all,
         }),
         args: anytype,
-    ) !ret.type {
+    ) !RetType {
+        return self.callWithInterops(sig, .{}, RetType, null, scope, .fo(sdk), args);
+    }
+
+    pub inline fn callWithInterops(
+        self: Self,
+        sig: [:0]const u8,
+        comptime param_interops: anytype,
+        comptime RetType: type,
+        comptime rInterop: ?ToZigInterop(RetType),
+        scope: *Scope,
+        sdk: api.VerifiedSdk(.{
+            .method = sdk_interop_specs.method,
+            .managed_object = sdk_interop_specs.managed_object,
+            .type_definition = .all,
+        }),
+        args: anytype,
+    ) !RetType {
         const method_metadata = try scope.cache.getOrCacheMethodMetadata(.fo(sdk), self.type_def, sig);
+        const retInterop = comptime rInterop orelse defaultToZigInterop(RetType);
         return try scope.invokeMethod(
             self.unsafeManaged().raw,
             method_metadata,
             param_interops,
-            ret,
+            .{ .type = RetType, .interop = retInterop },
             false,
             .fo(sdk),
             args,
@@ -113,12 +139,27 @@ pub const ValueType = struct {
             .type_definition = .all,
         }),
     ) !T {
+        return self.getWithInterop(field_name, T, defaultToZigInterop(T), scope, .fo(sdk));
+    }
+
+    pub inline fn getWithInterop(
+        self: Self,
+        field_name: [:0]const u8,
+        comptime T: type,
+        comptime interop: ToZigInterop(T),
+        scope: *Scope,
+        sdk: api.VerifiedSdk(.{
+            .field = sdk_interop_specs.field,
+            .managed_object = sdk_interop_specs.managed_object,
+            .type_definition = .all,
+        }),
+    ) !T {
         return scope.getFieldFromTypeDef(
             self.valuePtr(),
             self.type_def,
             field_name,
             T,
-            defaultToZigInterop(T),
+            interop,
             false,
             .fo(sdk),
         );
@@ -135,11 +176,26 @@ pub const ValueType = struct {
         }),
         value: anytype,
     ) !void {
+        return self.setWithInterop(field_name, defaultFromZigInterop, scope, .fo(sdk), value);
+    }
+
+    pub inline fn setWithInterop(
+        self: Self,
+        field_name: [:0]const u8,
+        comptime interop: FromZigInterop,
+        scope: *Scope,
+        sdk: api.VerifiedSdk(.{
+            .field = sdk_interop_specs.field,
+            .managed_object = sdk_interop_specs.managed_object,
+            .type_definition = .all,
+        }),
+        value: anytype,
+    ) !void {
         return scope.setFieldFromTypeDef(
             self.valuePtr(),
             self.type_def,
             field_name,
-            defaultFromZigInterop,
+            interop,
             false,
             .fo(sdk),
             value,
@@ -568,7 +624,7 @@ fn buildMethodArgsImpl(
     @setRuntimeSafety(false);
 
     const args_len = std.meta.fields(@TypeOf(args)).len;
-    var out: [args_len]?*anyopaque = undefined;
+    var out = std.mem.zeroes([args_len]?*anyopaque);
 
     inline for (0..args_len) |i| {
         const arg = @field(args, std.fmt.comptimePrint("{d}", .{i}));

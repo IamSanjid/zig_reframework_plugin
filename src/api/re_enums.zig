@@ -5,7 +5,7 @@ pub const HookCall = enum(i32) {
     skip_original,
 };
 
-pub const CreateInstanceFlags = enum(i32) {
+pub const CreateInstanceFlags = enum(u32) {
     none,
     simplify,
 };

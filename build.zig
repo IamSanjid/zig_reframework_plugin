@@ -60,7 +60,7 @@ fn REFrameworkExamplesT(comptime examples: anytype) type {
 const REFrameworkExamples = REFrameworkExamplesT(.{
     .re9_basic,
     .re9_additional_save_slots,
-    .re9_forced_items,
+    .re9_forced,
     .re_imgui,
     //.re_imgui_custom, // Disabled for 0.17.0+nightly zig. Renable when the zig's Clang frontend supports LLVM22, fully.
 });
@@ -208,12 +208,12 @@ fn re9_additional_save_slots_builder(b: *std.Build, target: std.Build.ResolvedTa
     b.installArtifact(re9_additional_save_slots_plugin);
 }
 
-fn re9_forced_items_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
-    const re9_forced_items_plugin = b.addLibrary(.{
+fn re9_forced_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const re9_forced_plugin = b.addLibrary(.{
         .linkage = .dynamic,
-        .name = "re9_forced_items",
+        .name = "re9_forced",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/re9_forced_items/main.zig"),
+            .root_source_file = b.path("src/examples/re9_forced/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -228,9 +228,9 @@ fn re9_forced_items_builder(b: *std.Build, target: std.Build.ResolvedTarget, opt
             },
         }),
     });
-    addReframeworkImGuiToExample(b, re9_forced_items_plugin);
+    addReframeworkImGuiToExample(b, re9_forced_plugin);
 
-    b.installArtifact(re9_forced_items_plugin);
+    b.installArtifact(re9_forced_plugin);
 }
 
 fn re_imgui_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {

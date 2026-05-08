@@ -19,6 +19,7 @@ pub var igCollapsingHeader_BoolPtr: *const fn (
     flags: cimgui.ImGuiTreeNodeFlags,
 ) callconv(.c) bool = undefined;
 pub var igText: *const fn (fmt: [*c]const u8, ...) callconv(.c) void = undefined;
+pub var igTextColored: *const fn (col: cimgui.ImVec4, fmt: [*c]const u8, ...) callconv(.c) void = undefined;
 pub var igSeparatorText: *const fn (label: [*c]const u8) callconv(.c) void = undefined;
 pub var igCheckbox: *const fn (label: [*c]const u8, v: [*c]bool) callconv(.c) bool = undefined;
 pub var igSeparator: *const fn () callconv(.c) void = undefined;
@@ -46,8 +47,17 @@ pub var igEndTable: *const fn () callconv(.c) void = undefined;
 pub var igTableGetHoveredRow: *const fn () callconv(.c) c_int = undefined;
 pub var igIsItemHovered: *const fn (flags: c_int) callconv(.c) bool = undefined;
 pub var igSetTooltip: *const fn (fmt: [*c]const u8, ...) callconv(.c) void = undefined;
-pub var igBegin: *const fn (name: [*c]const u8, p_open: [*c]bool, flags: c_int) callconv(.c) bool = undefined;
+pub var igBegin: *const fn (name: [*c]const u8, p_open: [*c]bool, flags: cimgui.ImGuiWindowFlags) callconv(.c) bool = undefined;
 pub var igEnd: *const fn () callconv(.c) void = undefined;
+pub var igBeginTabBar: *const fn (str_id: [*c]const u8, flags: cimgui.ImGuiTabBarFlags) callconv(.c) bool = undefined;
+pub var igEndTabBar: *const fn () callconv(.c) void = undefined;
+pub var igBeginTabItem: *const fn (label: [*c]const u8, p_open: [*c]bool, flags: cimgui.ImGuiTabItemFlags) callconv(.c) bool = undefined;
+pub var igEndTabItem: *const fn () callconv(.c) void = undefined;
+pub var igTabItemButton: *const fn (label: [*c]const u8, flags: cimgui.ImGuiTabItemFlags) callconv(.c) bool = undefined;
+pub var igSetTabItemClosed: *const fn (tab_or_docked_window_label: [*c]const u8) callconv(.c) void = undefined;
+pub var igPushID_Str: *const fn (str_id: [*c]const u8) callconv(.c) void = undefined;
+pub var igPushID_Int: *const fn (int_id: c_int) callconv(.c) void = undefined;
+pub var igPopID: *const fn () callconv(.c) void = undefined;
 
 var cimgui_dll_module: windows.HINSTANCE = undefined;
 
@@ -75,6 +85,8 @@ pub fn init() !void {
         return error.igCollapsingHeader_BoolPtrNotFound);
     igText = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igText") orelse
         return error.igTextNotFound);
+    igTextColored = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igTextColored") orelse
+        return error.igTextColoredNotFound);
     igSeparatorText = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSeparatorText") orelse
         return error.igSeparatorTextNotFound);
     igCheckbox = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igCheckbox") orelse
@@ -115,6 +127,24 @@ pub fn init() !void {
         return error.igBeginNotFound);
     igEnd = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igEnd") orelse
         return error.igEndNotFound);
+    igBeginTabBar = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igBeginTabBar") orelse
+        return error.igBeginTabBarNotFound);
+    igEndTabBar = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igEndTabBar") orelse
+        return error.igEndTabBarNotFound);
+    igBeginTabItem = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igBeginTabItem") orelse
+        return error.igBeginTabItemNotFound);
+    igEndTabItem = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igEndTabItem") orelse
+        return error.igEndTabItemNotFound);
+    igTabItemButton = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igTabItemButton") orelse
+        return error.igTabItemButtonNotFound);
+    igSetTabItemClosed = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSetTabItemClosed") orelse
+        return error.igSetTabItemClosedNotFound);
+    igPushID_Str = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igPushID_Str") orelse
+        return error.igPushID_StrNotFound);
+    igPushID_Int = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igPushID_Int") orelse
+        return error.igPushID_IntNotFound);
+    igPopID = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igPopID") orelse
+        return error.igPopIDNotFound);
 
     initialized = true;
 }

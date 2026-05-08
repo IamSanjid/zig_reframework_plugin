@@ -78,9 +78,8 @@ pub fn invokeMethod(
 
     var built_args = try buildMethodArgs(&sdk, self, method_metadata, args, param_interops);
 
-    const managed: api.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(obj)) };
     var invoke_res: api.InvokeRet = .{};
-    try managed.invokeMethod(method_metadata.handle, .fo(sdk), &built_args, &invoke_res);
+    try method_metadata.handle.invoke(.fo(sdk), obj, &built_args, &invoke_res);
 
     const p: *?*anyopaque = @ptrCast(@alignCast(&invoke_res.bytes[0]));
     // https://github.com/praydog/REFramework/blob/63dd83ead22bbab924b93bbd32e5be36d3a09a4d/src/mods/bindings/Sdk.cpp#L960
