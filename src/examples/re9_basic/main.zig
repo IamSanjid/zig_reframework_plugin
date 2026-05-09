@@ -93,8 +93,6 @@ fn init(api: re.Api) !void {
         },
     );
 
-    g.sdk = try g.api.verifiedSdk(re.api.specs.minimal.sdk);
-
     const PlayerEquipmentRuntimeT = try PlayerEquipment.Runtime.get(&g.interop_cache, .fo(g.sdk));
     const consumeLoading = PlayerEquipmentRuntimeT.getMethod(.consumeLoading);
     const consume_loading_hook = consumeLoading.addHook(

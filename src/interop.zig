@@ -34,6 +34,8 @@ const sdk_interop_specs = .{
     .method = Scope.method_specs,
     .field = api.specs.merge(Scope.field_specs, .get_offset_from_base),
     .type_definition = .all,
+    .type_info = Scope.type_info_specs,
+    .reflection_property = Scope.reflection_property_specs,
     .tdb = resolved_type.tdb_specs,
 };
 
@@ -213,6 +215,99 @@ pub const SystemStringView = struct {
     }
 };
 
+inline fn systemStrPtr(
+    type_def: api.sdk.TypeDefinition,
+    managed: api.sdk.ManagedObject,
+    sdk: InteropSdk,
+) ?*anyopaque {
+    @setRuntimeSafety(false);
+    // https://github.com/praydog/REFramework/blob/c4b1314820d20255febf7834903e8cedb669b49c/csharp-api/REFrameworkNET/SystemString.cpp#L25
+    const ptr: usize = @intFromPtr(managed.raw);
+    if (type_def.findField(.fo(sdk), "_firstChar")) |field| {
+        return @ptrFromInt(ptr + field.getOffsetFromBase(.fo(sdk)));
+    }
+    const field_offset: *usize = @ptrFromInt(ptr);
+    const field_offset_ptr: *u32 = @ptrFromInt(field_offset.* - @sizeOf(*anyopaque));
+    return @ptrFromInt(ptr + field_offset_ptr.* + 4);
+}
+
+pub const SystemArray = struct {
+    instance: ManagedSystemArray,
+
+    const ManagedSystemArray = ManagedObjectTypeBuilder("System.Array")
+        .Method(.GetLength, i32, null)
+        .Param("System.Int32", i32, null)
+        // Previous method gets added to "Type Builder".
+        .MethodWithName("GetValue", .GetValue, ?api.sdk.ManagedObject, null)
+        .Param("System.Int32", i32, null)
+        // Previous method gets added to "Type Builder".
+        .Method(.SetValue, void, null)
+        // type name as null means the param type is not included in the method signature,
+        // so only the method name is used for method resolution.
+        .Param(null, api.sdk.ManagedObject, null)
+        .Param("System.Int32", i32, null)
+        .Build();
+
+    pub inline fn init(
+        cache: *ManagedTypeCache,
+        sdk: InteropSdk,
+        managed: api.sdk.ManagedObject,
+    ) !SystemArray {
+        const runtime = try ManagedSystemArray.Runtime.get(cache, sdk);
+        if (runtime.metadata.type_def.getVmObjType(.fo(sdk)) != .array) {
+            return error.ExpectedArrayType;
+        }
+        // VmObjType is array, so we can forcefully treat it as System.Array without checking runtime type def and full name
+        return .{
+            .instance = runtime.forcedInstance(managed),
+        };
+    }
+
+    pub inline fn initWithTypeDef(
+        cache: *ManagedTypeCache,
+        sdk: InteropSdk,
+        managed: api.sdk.ManagedObject,
+        type_def: api.sdk.TypeDefinition,
+    ) !SystemArray {
+        if (type_def.getVmObjType(.fo(sdk)) != .array) {
+            return error.ExpectedArrayType;
+        }
+        const runtime = try ManagedSystemArray.Runtime.getWithTypeDef(cache, sdk, type_def);
+        // VmObjType is array, so we can forcefully treat it as System.Array without checking runtime type def and full name
+        return .{
+            .instance = runtime.forcedInstance(managed),
+        };
+    }
+
+    pub inline fn unsafeEntries(self: SystemArray, sdk: InteropSdk) !SystemArrayEntries {
+        return SystemArrayEntries.unsafe(self.managed, sdk);
+    }
+
+    pub inline fn getLength(self: SystemArray, scope: *Scope, sdk: InteropSdk) !i32 {
+        return self.instance.call(.GetLength, scope, .fo(sdk), .{0});
+    }
+
+    pub inline fn getValue(self: SystemArray, index: anytype, scope: *Scope, sdk: InteropSdk) !?api.sdk.ManagedObject {
+        if (@typeInfo(@TypeOf(index)) != .int) {
+            @compileError("Only integer indices are supported for System.Array.GetValue");
+        }
+        return self.instance.call(.GetValue, scope, .fo(sdk), .{index});
+    }
+
+    pub inline fn setValue(
+        self: SystemArray,
+        value: anytype,
+        index: anytype,
+        scope: *Scope,
+        sdk: InteropSdk,
+    ) !void {
+        if (@typeInfo(@TypeOf(index)) != .int) {
+            @compileError("Only integer indices are supported for System.Array.SetValue");
+        }
+        return self.instance.call(.SetValue, scope, .fo(sdk), .{ value, index });
+    }
+};
+
 pub const SystemArrayEntries = struct {
     ptr: ?*anyopaque,
     len: u32,
@@ -239,21 +334,44 @@ pub const SystemArrayEntries = struct {
     }
 };
 
-inline fn systemStrPtr(
-    type_def: api.sdk.TypeDefinition,
-    managed: api.sdk.ManagedObject,
-    sdk: InteropSdk,
-) ?*anyopaque {
-    @setRuntimeSafety(false);
-    // https://github.com/praydog/REFramework/blob/c4b1314820d20255febf7834903e8cedb669b49c/csharp-api/REFrameworkNET/SystemString.cpp#L25
-    const ptr: usize = @intFromPtr(managed.raw);
-    if (type_def.findField(.fo(sdk), "_firstChar")) |field| {
-        return @ptrFromInt(ptr + field.getOffsetFromBase(.fo(sdk)));
+pub const ViaComponent = opaque {
+    const owner_offset = 0x0;
+    const child_component_offset = 0x8;
+    const prev_component_offset = 0x10;
+    const next_component_offset = 0x18;
+
+    const Self = @This();
+
+    // via.GameObject
+    pub inline fn getOwner(self: *Self) api.sdk.ManagedObject {
+        @setRuntimeSafety(false);
+        const ptr = @intFromPtr(self);
+        const owner_ptr: *?*anyopaque = @ptrFromInt(ptr + managed_object_runtime_size + owner_offset);
+        return .{ .raw = @ptrCast(@alignCast(owner_ptr.*)) };
     }
-    const field_offset: *usize = @ptrFromInt(ptr);
-    const field_offset_ptr: *u32 = @ptrFromInt(field_offset.* - @sizeOf(*anyopaque));
-    return @ptrFromInt(ptr + field_offset_ptr.* + 4);
-}
+
+    // start of child components..
+    pub inline fn childComponent(self: *Self) ?*Self {
+        @setRuntimeSafety(false);
+        const ptr = @intFromPtr(self);
+        const next_ptr: *?*Self = @ptrFromInt(ptr + managed_object_runtime_size + child_component_offset);
+        return next_ptr.*;
+    }
+
+    pub inline fn prevComponent(self: *Self) ?*Self {
+        @setRuntimeSafety(false);
+        const ptr = @intFromPtr(self);
+        const next_ptr: *?*Self = @ptrFromInt(ptr + managed_object_runtime_size + prev_component_offset);
+        return next_ptr.*;
+    }
+
+    pub inline fn nextComponent(self: *Self) ?*Self {
+        @setRuntimeSafety(false);
+        const ptr = @intFromPtr(self);
+        const next_ptr: *?*Self = @ptrFromInt(ptr + managed_object_runtime_size + next_component_offset);
+        return next_ptr.*;
+    }
+};
 
 pub const FromZigInterop = @TypeOf(defaultFromZigInterop);
 
@@ -325,6 +443,10 @@ pub fn defaultFromZigInterop(
 
             const b: [*]u8 = @ptrCast(out);
             @memcpy(b[0..arg.data.len], arg.data);
+            return;
+        },
+        SystemArray => {
+            out.* = @ptrCast(arg.instance.managed.raw);
             return;
         },
         else => {
@@ -478,6 +600,18 @@ pub fn defaultToZigInterop(RetType: type) fn (*const anyopaque, *Scope, api.sdk.
                     }
                     return @as(*const [4]f32, @ptrCast(@alignCast(data))).*;
                 },
+                api.sdk.ManagedObject => {
+                    if (comptime isSafeMode()) {
+                        // for `valtypes` its required to use the special ValueType wrapper.
+                        if (from_type_def.getVmObjType(.fo(sdk)) == .valtype) {
+                            return error.ExpectedNonValueType;
+                        }
+                    }
+
+                    const ptr: ?*anyopaque = data.*;
+                    if (ptr == null) return error.ReturnedUnexpectedNull;
+                    return .{ .raw = @ptrCast(@alignCast(ptr)) };
+                },
                 SystemStringView => {
                     if (comptime isSafeMode()) {
                         const system_string_type_name = "System.String";
@@ -497,18 +631,6 @@ pub fn defaultToZigInterop(RetType: type) fn (*const anyopaque, *Scope, api.sdk.
                         .fo(sdk),
                     ) orelse return error.FailedToGetStringData);
                 },
-                api.sdk.ManagedObject => {
-                    if (comptime isSafeMode()) {
-                        // for `valtypes` its required to use the special ValueType wrapper.
-                        if (from_type_def.getVmObjType(.fo(sdk)) == .valtype) {
-                            return error.ExpectedNonValueType;
-                        }
-                    }
-
-                    const ptr: ?*anyopaque = data.*;
-                    if (ptr == null) return error.ReturnedUnexpectedNull;
-                    return .{ .raw = @ptrCast(@alignCast(ptr)) };
-                },
                 ValueType => {
                     if (comptime isSafeMode()) {
                         // for `valtypes` its required to use the special ValueType wrapper.
@@ -517,6 +639,12 @@ pub fn defaultToZigInterop(RetType: type) fn (*const anyopaque, *Scope, api.sdk.
                         }
                     }
                     return try ValueType.init(scope.arena.allocator(), sdk.*, data, from_type_def);
+                },
+                SystemArray => {
+                    const ptr: ?*anyopaque = data.*;
+                    if (ptr == null) return error.ReturnedUnexpectedNull;
+                    const mo: api.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(ptr)) };
+                    return try SystemArray.initWithTypeDef(scope.cache, sdk.*, mo, from_type_def);
                 },
                 else => {},
             }

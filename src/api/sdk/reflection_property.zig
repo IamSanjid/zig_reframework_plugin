@@ -1,4 +1,5 @@
 const API = @import("API");
+const ManagedObject = @import("managed_object.zig").ManagedObject;
 const Verified = @import("../verified.zig").Verified;
 
 pub const ReflectionProperty = extern struct {
@@ -12,6 +13,17 @@ pub const ReflectionProperty = extern struct {
 
     pub inline fn getGetter(self: Self, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_property = .get_getter })) API.REFrameworkReflectionPropertyMethod {
         return sdk.safe().reflection_property.safe().get_getter(self.handle());
+    }
+
+    pub inline fn getDataRaw(
+        self: Self,
+        sdk: Verified(API.REFrameworkSDKData, .{ .reflection_property = .get_getter }),
+        obj: ManagedObject,
+    ) ?*anyopaque {
+        const getter = self.getGetter(.fo(sdk)) orelse return null;
+        var data: ?*anyopaque = null;
+        _ = getter(self.handle(), obj.handle(), @ptrCast(@alignCast(&data)));
+        return data;
     }
 
     pub inline fn isStatic(self: Self, sdk: Verified(API.REFrameworkSDKData, .{ .reflection_property = .is_static })) bool {

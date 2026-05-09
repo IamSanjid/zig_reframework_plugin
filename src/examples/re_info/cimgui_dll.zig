@@ -66,8 +66,6 @@ pub var igInputText: *const fn (
     callback: ?*const fn ([*c]cimgui.ImGuiInputTextCallbackData) c_int,
     user_data: ?*anyopaque,
 ) callconv(.c) bool = undefined;
-pub var igIsMouseReleased_Nil: *const fn (key: cimgui.ImGuiKey) callconv(.c) bool = undefined;
-pub var igSetClipboardText: *const fn (text: [*c]const u8) callconv(.c) void = undefined;
 
 var cimgui_dll_module: windows.HINSTANCE = undefined;
 
@@ -157,10 +155,6 @@ pub fn init() !void {
         return error.igPopIDNotFound);
     igInputText = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igInputText") orelse
         return error.igInputTextNotFound);
-    igIsMouseReleased_Nil = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igIsMouseReleased_Nil") orelse
-        return error.igIsMouseReleased_NilNotFound);
-    igSetClipboardText = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSetClipboardText") orelse
-        return error.igSetClipboardTextNotFound);
 
     initialized = true;
 }

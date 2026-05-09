@@ -15,9 +15,12 @@ pub const minimal = .{
             .create_managed_array,
         },
         .managed_object = .{
+            .get_reflection_property_descriptor,
             .get_type_definition,
+            .get_ref_count,
             .add_ref,
             .release,
+            .is_managed_object,
         },
         .method = .{
             .invoke,
@@ -34,6 +37,12 @@ pub const minimal = .{
         },
         .tdb = .find_type,
         .type_definition = .all,
+        .type_info = .{
+            .get_name,
+            .get_type_definition,
+            .get_reflection_property_descriptor,
+        },
+        .reflection_property = .all,
     },
 };
 
@@ -62,10 +71,12 @@ pub const compact = .{
             .is_static,
         },
         .managed_object = .{
-            .add_ref,
-            .release,
+            .get_reflection_property_descriptor,
             .get_type_definition,
             .get_ref_count,
+            .add_ref,
+            .release,
+            .is_managed_object,
         },
         .method = .{
             .invoke,
@@ -92,12 +103,7 @@ pub const compact = .{
         .resource_manager = .all,
         .tdb = .all,
         .type_definition = .all,
-        .type_info = .{
-            .get_name,
-            .get_type_definition,
-            .is_singleton,
-            .get_singleton_instance,
-        },
+        .type_info = .all,
         .vm_context = .all,
     },
 };

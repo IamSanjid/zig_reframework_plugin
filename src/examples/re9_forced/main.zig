@@ -30,6 +30,12 @@ const CurrentObjectiveInfo = managed_types.CurrentObjectiveInfo;
 const ObjectiveID = managed_types.ObjectiveID;
 const ItemCore = managed_types.ItemCore;
 const InteractActionItemPickup = managed_types.InteractActionItemPickup;
+const LevelFlowManagedObject = managed_types.LevelFlowManagedObject;
+const GameObject = managed_types.GameObject;
+const LevelProgressID = managed_types.LevelProgressID;
+const BT_ActionArg = managed_types.BT_ActionArg;
+const LFBTA_FSM_GameJumpAction = managed_types.LFBTA_FSM_GameJumpAction;
+const LFBTA_FSM_GameJumpAction_GameJumpData = managed_types.LFBTA_FSM_GameJumpAction_GameJumpData;
 
 const CharacterManager = managed_types.CharacterManager;
 const InventoryManager = managed_types.InventoryManager;
@@ -89,6 +95,7 @@ pub const g = struct {
     pub var level_flow_manager: LevelFlowManager = undefined;
 
     pub var items: Items = undefined;
+    pub var level_flow_managed_objects: LevelFlowManagedObjects = undefined;
     pub var item_pickups: ItemPickups = undefined;
     pub var player: ?Player = null;
 
@@ -104,6 +111,8 @@ pub const g = struct {
         items = .init(@ptrCast(@alignCast(item_mgr_mo.raw)));
 
         item_pickups = .{ .arena = .init(allocator) };
+
+        level_flow_managed_objects = .{ .arena = .init(allocator) };
 
         character_manager = try CharacterManager.init(
             &g.interop_cache,
@@ -652,12 +661,12 @@ pub const ObjectiveManagement = struct {
         self.objectives = .empty;
 
         const infos = try g.objective_manager.call(.getObjectiveInfoArray, scope, .fo(g.sdk), .{});
-        const infos_len: usize = @intCast(try infos.call(.GetLength, scope, .fo(g.sdk), .{0}));
+        const infos_len: usize = @intCast(try infos.getLength(scope, .fo(g.sdk)));
         try self.objectives.ensureTotalCapacity(arena, infos_len);
 
         for (0..infos_len) |i| {
             const idx: i32 = @intCast(i);
-            const info_mo = (infos.call(.GetValue, scope, .fo(g.sdk), .{idx}) catch continue) orelse continue;
+            const info_mo = (infos.getValue(idx, scope, .fo(g.sdk)) catch continue) orelse continue;
             const info = CurrentObjectiveInfo.init(&g.interop_cache, .fo(g.sdk), info_mo) catch continue;
             const details = CurrentObjectiveDetails.copyFrom(info, arena, scope, .fo(g.sdk)) catch continue;
             try self.objectives.append(arena, details);
@@ -685,6 +694,25 @@ pub const ObjectiveManagement = struct {
 
     pub inline fn isOpenMap(scope: *interop.Scope, objective_id: ObjectiveID) !bool {
         return g.objective_manager.call(.isOpenMap, scope, .fo(g.sdk), .{objective_id});
+    }
+};
+
+pub const LevelFlowManagedObjects = struct {
+    collection: std.ArrayList(LevelFlowManagedObject) = .empty,
+    arena: std.heap.ArenaAllocator,
+
+    inline fn collect(self: *LevelFlowManagedObjects, level_flow_mo: LevelFlowManagedObject) !void {
+        const arena = self.arena.allocator();
+
+        var scope = g.interop_cache.newScope(arena);
+        defer scope.deinit();
+
+        try self.collection.append(arena, level_flow_mo);
+    }
+
+    fn reset(self: *LevelFlowManagedObjects) void {
+        _ = self.arena.reset(.retain_capacity);
+        self.collection = .empty;
     }
 };
 
@@ -766,8 +794,42 @@ fn onPlayerInitialized() !void {
     g.api.lockLua();
     defer g.api.unlockLua();
 
+    try g.interop_cache.resetDiagnostics();
+
     log.debug("Collected item-pickups: {}", .{g.item_pickups.collection.items.len});
     try g.item_pickups.mapPickupsWithItemId();
+
+    log.debug("Collected level flow managed objects: {}", .{g.level_flow_managed_objects.collection.items.len});
+    {
+        var scope = g.interop_cache.newScope(g.allocator);
+        defer scope.deinit();
+
+        for (g.level_flow_managed_objects.collection.items) |flow| {
+            const component: *interop.ViaComponent = @ptrCast(flow.managed.raw);
+            const next_component_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(component.nextComponent() orelse continue)) };
+            const next_component = managed_types.LFBTA_FSM_GameJumpAction_LevelFlowGameJumpActionParam.init(&g.interop_cache, .fo(g.sdk), next_component_mo) catch |e| {
+                if (e == error.TypeDefMismatch) continue;
+                log.err("Error initializing LFBTA_FSM_GameJumpAction_LevelFlowGameJumpActionParam: {}, context: {s}", .{ e, try g.interop_cache.ownDiagnostics() });
+                continue;
+            };
+
+            const game_obj = GameObject.init(&g.interop_cache, .fo(g.sdk), component.getOwner()) catch |e| {
+                log.err("Error getting GameObject: {}, context: {s}", .{ e, try g.interop_cache.ownDiagnostics() });
+                continue;
+            };
+            const game_obj_name_sys_str = game_obj.call(.get_Name, &scope, .fo(g.sdk), .{}) catch |e| {
+                log.err("Error getting GameObject-Name: {}, context: {s}", .{ e, try g.interop_cache.ownDiagnostics() });
+                continue;
+            };
+            const game_obj_name = try std.unicode.utf16LeToUtf8Alloc(scope.arena.allocator(), game_obj_name_sys_str.data);
+            log.debug("Level Flow Managed Object: 0x{x}, Name: {s}(0x{x}), Next: 0x{x}", .{
+                @intFromPtr(flow.managed.raw),
+                game_obj_name,
+                @intFromPtr(game_obj.managed.raw),
+                @intFromPtr(next_component.managed.raw),
+            });
+        }
+    }
 
     g.player = try .init();
     try g.player.?.checkInventory();
@@ -780,6 +842,7 @@ fn onPlayerUnlinked() void {
 
     g.items.reset();
     g.item_pickups.reset();
+    g.level_flow_managed_objects.reset();
 
     const player = &(g.player orelse return);
     player.deinit();
@@ -872,6 +935,66 @@ fn installHooks() !void {
         false,
     );
 
+    _ = g.level_flow_manager.runtime.getMethod(.registerManagedObject).addHook(
+        .fo(g.sdk.safe().functions),
+        struct {
+            fn func(args_opt: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
+                const args = args_opt orelse return .call_original;
+                if (args.len < 3) return .call_original;
+
+                const this_ptr = args[2] orelse return .call_original;
+                const this_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(this_ptr)) };
+                const this = LevelFlowManagedObject.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
+                    log.err("Error in LevelFlowManagedObject init: {}", .{e});
+                    return .call_original;
+                };
+
+                g.api.lockLua();
+                defer g.api.unlockLua();
+                g.level_flow_managed_objects.collect(this) catch {};
+
+                return .call_original;
+            }
+        }.func,
+        null,
+        false,
+    );
+
+    const LFBTA_FSM_GameJumpActionT = try LFBTA_FSM_GameJumpAction.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
+    _ = LFBTA_FSM_GameJumpActionT.getMethod(.@".ctor").addHook(
+        .fo(g.sdk.safe().functions),
+        struct {
+            fn func(args_opt: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
+                const args = args_opt orelse return .call_original;
+                if (args.len < 2) return .call_original;
+                const this_ptr = args[1] orelse return .call_original;
+                const this_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(this_ptr)) };
+                const this = LFBTA_FSM_GameJumpAction.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
+                    if (e == error.TypeDefMismatch) return .call_original;
+                    log.err("Error in LFBTA_FSM_GameJumpAction init: {}", .{e});
+                    return .call_original;
+                };
+
+                g.api.lockLua();
+                defer g.api.unlockLua();
+
+                //const arena = g.game_jumps.arena.allocator();
+
+                const type_def = this.managed.getTypeDefinition(.fo(g.sdk)) orelse return .call_original;
+                const type_name = type_def.getFullNameAlloc(.fo(g.sdk), g.allocator) catch return .call_original;
+                defer g.allocator.free(type_name);
+
+                log.debug("GameJump({s}) .ctor: 0x{x}", .{ type_name, @intFromPtr(this.managed.raw) });
+
+                //g.game_jumps.collect(this) catch {};
+
+                return .call_original;
+            }
+        }.func,
+        null,
+        false,
+    );
+
     // app.Inventory.addPanel(app.ItemAmountData, via.Int2, app.InventoryPanelRotateType, app.ItemStockChangedEventType)
     const addPanelFn = (try tdbGetMethod(g.tdb, "app.Inventory", "addPanel(app.ItemAmountData, via.Int2, app.InventoryPanelRotateType, app.ItemStockChangedEventType)")) orelse
         return error.AddPanelMethodNotFound;
@@ -946,6 +1069,11 @@ fn installHooks() !void {
         struct {
             fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
                 onPlayerInitialized() catch |e| {
+                    if (g.interop_cache.ownDiagnostics()) |diags| {
+                        if (diags.len > 0) {
+                            log.err("Cache context: {s}", .{diags});
+                        }
+                    } else |_| {}
                     log.err("Error notifyPlayerInitialized: {}", .{e});
                 };
             }

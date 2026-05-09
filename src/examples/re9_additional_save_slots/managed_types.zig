@@ -2,19 +2,7 @@ const re = @import("reframework");
 
 const interop = re.interop;
 
-pub const SystemArray = interop.ManagedObjectTypeBuilder("System.Array")
-    .Method(.GetLength, i32, null)
-    .Param("System.Int32", i32, null)
-    // Previous method gets added to "Type Builder".
-    .MethodWithName("GetValue", .GetValue, ?re.api.sdk.ManagedObject, null)
-    .Param("System.Int32", i32, null)
-    // Previous method gets added to "Type Builder".
-    .Method(.SetValue, void, null)
-    // type name as null means the param type is not included in the method signature,
-    // so only the method name is used for method resolution.
-    .Param(null, re.api.sdk.ManagedObject, null)
-    .Param("System.Int32", i32, null)
-    .Build(); // Type built, not the method.
+pub const SystemArray = interop.SystemArray;
 
 pub const SaveSlotSegmentType = enum(c_int) {
     invalid = 0,

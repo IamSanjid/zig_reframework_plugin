@@ -426,6 +426,7 @@ fn drawConfig() void {
     drawMultiChoiceFrom(managed_types.SaveSlotSelectionMethod, "Manual Save Slot Selection:", &u.manual_save_slot_selection_method);
 }
 
+const debug_behavior_tree = @import("debug_behavior_tree.zig");
 pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
     try cimgui_dll.init();
 
@@ -435,6 +436,8 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
         @ptrCast(@alignCast(data.free_fn)),
         data.user_data,
     );
+
+    try debug_behavior_tree.draw();
 
     if (!u.show_window) {
         if (cimgui_dll.igCollapsingHeader_BoolPtr("RE9 Forced in Zig", null, 0)) {
@@ -512,7 +515,7 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
         defer cimgui_dll.igEndTabItem();
 
         if (cimgui_dll.igButton("Skip Current Chapter", .{})) {
-            try g.level_flow_manager.call(.requestGameJump, &u.scope, .fo(g.sdk), .{});
+            try g.level_flow_manager.call(.requestStartFlow, &u.scope, .fo(g.sdk), .{});
             return; // new-frame
         }
 

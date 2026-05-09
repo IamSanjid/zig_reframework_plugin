@@ -171,15 +171,7 @@ comptime {
     std.debug.assert(@offsetOf(ItemManager, "_ItemCatalog") == 0xf0);
 }
 
-pub const SystemArray = interop.ManagedObjectTypeBuilder("System.Array")
-    .Method(.GetLength, i32, null)
-    .Param("System.Int32", i32, null)
-    .MethodWithName("GetValue", .GetValue, ?re.api.sdk.ManagedObject, null)
-    .Param("System.Int32", i32, null)
-    .Method(.SetValue, void, null)
-    .Param(null, re.api.sdk.ManagedObject, null)
-    .Param("System.Int32", i32, null)
-    .Build();
+pub const SystemArray = interop.SystemArray;
 
 pub const SystemGuid = interop.ValueType;
 
@@ -431,11 +423,28 @@ pub const SaveServiceManager = interop.ManagedObjectTypeBuilder("app.SaveService
     .Param("System.Nullable`1<app.SavedataSaveRequestArgs>", ?re.sdk.ManagedObject, null)
     .Build();
 
+pub const SaveSlotCategoryBits = enum(c_int) {
+    none = 0,
+    system = 2,
+    auto = 4,
+    game = 8,
+    userdefine_system_0 = 16,
+    userdefine_system_1 = 32,
+    userdefine_game_0 = 64,
+    userdefine_game_1 = 128,
+    userdefine_game_2 = 256,
+    userdefine_game_3 = 512,
+};
+
 pub const SceneTransitionManager = interop.ManagedObjectTypeBuilder("app.SceneTransitionManager")
     .Method(.requestTitleSceneJump, void, null)
     .Param("System.Boolean", bool, null)
     .Method(.requestMainGameJump, void, null)
     .Param("System.Boolean", bool, null)
+    .Method(.requestMainGameJumpCore, void, null)
+    .Param("System.Boolean", bool, null)
+    .Param("System.Nullable`1<app.NewgameSetupRequestArgs>", bool, null)
+    .Param("app.SaveSlotCategoryBits", SaveSlotCategoryBits, null)
     .Build();
 
 pub const ItemCore = interop.ManagedObjectTypeBuilder("app.ItemCore")
@@ -463,4 +472,58 @@ pub const InteractTriggerItemPickupEvent = interop.ManagedObjectTypeBuilder("app
 
 pub const LevelFlowManager = interop.ManagedObjectTypeBuilder("app.LevelFlowManager")
     .Method(.requestGameJump, void, null)
+    .Method(.requestStartFlow, void, null)
+    .Method(.registerManagedObject, void, null)
+    .Param("app.LevelFlowManagedObject", LevelFlowManagedObject, null)
+    .Field(._ManagedObjectList, *GenericDictionary, null, null)
+    .Build();
+
+pub const LevelFlowManagedObject = interop.ManagedObjectTypeBuilder("app.LevelFlowManagedObject")
+    .Method(.get_Enabled, bool, null)
+    .Field(._FlowName, NameHash, null, null)
+    .Field(._ActiveNo, i32, null, null)
+    .Field(._EndNo, i32, null, null)
+    .Field(._LevelFlowEndType, LevelFlowEndType, null, null)
+    .Field(._ExecutedSave, re.sdk.ManagedObject, null, null)
+    .Field(._CollidersList, SystemArray, null, null)
+    .Build();
+
+pub const GameObject = interop.ManagedObjectTypeBuilder("via.GameObject")
+    .Method(.get_Name, interop.SystemStringView, null)
+    .Build();
+
+pub const LevelFlowEndType = enum(c_int) {
+    auto = 0,
+    none = 1,
+    set_no = 2,
+};
+
+pub const NameHash = interop.ManagedObjectTypeBuilder("app.NameHash")
+    .Field(.EmptyHash, u32, null, null)
+    .Field(._Hash, u32, null, null)
+    .Build();
+
+pub const LevelProgressID = re.sdk.ManagedObject;
+
+pub const BT_ActionArg = interop.ManagedObjectTypeBuilder("via.behaviortree.ActionArg")
+    .Method(.@".ctor", void, null)
+    .Build();
+
+pub const LFBTA_FSM_GameJumpAction_LevelFlowGameJumpActionParam = interop.ManagedObjectTypeBuilder("app.LevelFlowBehaviorTreeAction_FSM_GameJumpAction.LevelFlowGameJumpActionParam")
+    .Method(.get_ParamArray, SystemArray, null)
+    .Build();
+
+pub const LFBTA_FSM_GameJumpAction = interop.ManagedObjectTypeBuilder("app.LevelFlowBehaviorTreeAction_FSM_GameJumpAction")
+    .Method(.@".ctor", void, null)
+    .Method(.start, void, null)
+    .Param("via.behaviortree.ActionArg", BT_ActionArg, null)
+    .Field(._IsActionEnd, bool, null, null)
+    .Field(._Param, LFBTA_FSM_GameJumpAction_GameJumpData, null, null)
+    .Build();
+
+pub const LFBTA_FSM_GameJumpAction_GameJumpData = interop.ManagedObjectTypeBuilder("app.LevelFlowBehaviorTreeAction_FSM_GameJumpAction.GameJumpData")
+    .Field(._LevelIDCache, LevelProgressID, null, null)
+    .Field(._LevelIDStr, interop.SystemStringView, null, null)
+    .Field(._IsOverride, bool, null, null)
+    .Field(._JumpName, interop.SystemStringView, null, null)
     .Build();

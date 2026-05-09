@@ -172,7 +172,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
         }
 
         // (Ab)using Zig's type memoization to cache metadata.
-        fn Method(
+        pub fn Method(
             comptime sig: [:0]const u8,
             comptime param_interops: anytype,
             comptime RetType: type,
@@ -219,7 +219,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
             };
         }
 
-        fn Field(
+        pub fn Field(
             comptime field_name: [:0]const u8,
             comptime static: bool,
         ) type {
@@ -394,7 +394,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                 const Static = Method(sig, param_interops, RetType, rInterop, static);
                 const method_metadata = try Static.getMetadata(self.scope.cache, self.type_def_metadata, .fo(sdk));
 
-                errdefer self.scope.cache.appendDiagnostics("method={s}", .{sig}) catch {};
+                errdefer self.scope.cache.appendDiagnostics("[resolved_type.scoped.call]method={s}", .{sig}) catch {};
 
                 const retInterop = comptime Static._rInterop orelse defaultToZigInterop(Static._RetType);
                 return try self.scope.invokeMethod(
@@ -495,7 +495,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                 const Static = Field(@tagName(field), static);
                 const field_metadata, const is_passed_type_valtype = try Static.getMetadata(self.scope.cache, self.type_def_metadata, .fo(sdk));
 
-                errdefer self.scope.cache.appendDiagnostics("field={s}", .{@tagName(field)}) catch {};
+                errdefer self.scope.cache.appendDiagnostics("[resolved_type.scoped.get]field={s}", .{@tagName(field)}) catch {};
 
                 if (comptime static) {
                     return try self.scope.readStaticField(field_metadata, T, interop, .fo(sdk));
@@ -584,7 +584,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                 const Static = Field(@tagName(field), static);
                 const field_metadata, const is_passed_type_valtype = try Static.getMetadata(self.scope.cache, self.type_def_metadata, .fo(sdk));
 
-                errdefer self.scope.cache.appendDiagnostics("field={s}", .{@tagName(field)}) catch {};
+                errdefer self.scope.cache.appendDiagnostics("[resolved_type.scoped.set]field={s}", .{@tagName(field)}) catch {};
 
                 if (comptime static) {
                     return try self.scope.writeStaticField(field_metadata, interop, .fo(sdk), value);

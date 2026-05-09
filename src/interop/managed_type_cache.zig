@@ -24,7 +24,7 @@ const TypeDefContext = struct {
 
 pub const ManagedTypeCache = struct {
     cache_arena: std.heap.ArenaAllocator,
-    value_arena: std.heap.ArenaAllocator,
+    diagnostics_arena: std.heap.ArenaAllocator,
     io: std.Io,
     type_def_map: std.HashMapUnmanaged(
         api.sdk.TypeDefinition,
@@ -44,7 +44,7 @@ pub const ManagedTypeCache = struct {
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
         return .{
             .cache_arena = .init(allocator),
-            .value_arena = .init(allocator),
+            .diagnostics_arena = .init(allocator),
             .io = io,
             .type_def_map = .empty,
             .diagnostics = .empty,
@@ -53,10 +53,10 @@ pub const ManagedTypeCache = struct {
 
     pub fn deinit(self: *Self) void {
         self.type_def_map.deinit(self.cache_arena.allocator());
-        self.diagnostics.deinit(self.value_arena.allocator());
+        self.diagnostics.deinit(self.diagnostics_arena.allocator());
 
         _ = self.cache_arena.reset(.free_all);
-        _ = self.value_arena.reset(.free_all);
+        _ = self.diagnostics_arena.reset(.free_all);
 
         self.* = undefined;
     }
@@ -65,7 +65,30 @@ pub const ManagedTypeCache = struct {
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
 
-        return self.diagnostics.toOwnedSliceSentinel(self.value_arena.allocator(), 0);
+        return self.diagnostics.toOwnedSliceSentinel(self.diagnostics_arena.allocator(), 0);
+    }
+
+    pub fn resetDiagnostics(self: *Self) !void {
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
+
+        self.diagnostics = .empty;
+        _ = self.diagnostics_arena.reset(.retain_capacity);
+    }
+
+    pub fn appendDiagnostics(self: *Self, comptime fmt: []const u8, args: anytype) !void {
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const allocator = self.diagnostics_arena.allocator();
+        if (self.diagnostics.items.len > 0) {
+            try self.diagnostics.append(allocator, '\n');
+        }
+        try self.diagnostics.print(self.diagnostics_arena.allocator(), fmt, args);
+    }
+
+    pub fn hasDiagnostics(self: *Self) bool {
+        return self.diagnostics.items.len > 0;
     }
 
     pub fn lock(self: *Self) !void {
@@ -110,13 +133,6 @@ pub const ManagedTypeCache = struct {
 
         const type_def_metadata = try getOrCacheTypeDefMetadata(self, type_def);
         return getOrCacheFieldMetadataTo(self, type_def_metadata, field_name, .fo(sdk));
-    }
-
-    pub fn appendDiagnostics(self: *Self, comptime fmt: []const u8, args: anytype) !void {
-        try self.mutex.lock(self.io);
-        defer self.mutex.unlock(self.io);
-
-        try self.diagnostics.print(self.value_arena.allocator(), fmt, args);
     }
 
     /// Resolves a managed type by its name and returns its metadata, it will cache the required "metadata"
@@ -223,7 +239,7 @@ pub fn getOrCacheFieldMetadataTo(
 }
 
 pub fn appendError(self: *ManagedTypeCache, err: []const u8) !void {
-    const arena = self.value_arena.allocator();
+    const arena = self.diagnostics_arena.allocator();
     try self.diagnostics.appendSlice(arena, err);
     try self.diagnostics.append(arena, '\n');
 }

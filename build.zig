@@ -63,6 +63,7 @@ const REFrameworkExamples = REFrameworkExamplesT(.{
     .re9_forced,
     .re_imgui,
     //.re_imgui_custom, // Disabled for 0.17.0+nightly zig. Renable when the zig's Clang frontend supports LLVM22, fully.
+    .re_info,
 });
 
 pub fn build(b: *std.Build) void {
@@ -281,6 +282,31 @@ fn re_imgui_custom_builder(b: *std.Build, target: std.Build.ResolvedTarget, opti
     addImGuiToExample(b, re_imgui_custom_plugin);
 
     b.installArtifact(re_imgui_custom_plugin);
+}
+
+fn re_info_builder(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const re_info_plugin = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "re_info",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/re_info/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "reframework",
+                    .module = reframework(b, .{
+                        .d3d = null,
+                        .target = target,
+                        .optimize = optimize,
+                    }) orelse return,
+                },
+            },
+        }),
+    });
+    addReframeworkImGuiToExample(b, re_info_plugin);
+
+    b.installArtifact(re_info_plugin);
 }
 
 fn addReframeworkImGuiToExample(b: *std.Build, to: *std.Build.Step.Compile) void {

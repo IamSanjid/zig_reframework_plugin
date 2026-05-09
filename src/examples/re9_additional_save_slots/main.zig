@@ -171,7 +171,7 @@ fn init(api: re.Api) !void {
                     .fo(g.sdk),
                     .{ .raw = @ptrCast(@alignCast(retval_ptr.*)) },
                 ) catch return;
-                var len = arr.call(.GetLength, &scope, .fo(g.sdk), .{0}) catch return;
+                var len = arr.getLength(&scope, .fo(g.sdk)) catch return;
 
                 const max_save_games_with_auto: usize = @intCast(max_save_games + auto_save_slots);
 
@@ -200,14 +200,14 @@ fn init(api: re.Api) !void {
                             .fo(g.sdk),
                             .{ SaveSlotCategory.auto, i },
                         ) catch continue) orelse continue;
-                        new_arr.call(.SetValue, &scope, .fo(g.sdk), .{ new_save_info, i }) catch continue;
+                        new_arr.setValue(new_save_info, i, &scope, .fo(g.sdk)) catch continue;
                         new_save_info.managed.addRef(.fo(g.sdk));
                     }
                     len += auto_save_slots;
                 } else {
                     for (0..@intCast(len)) |i| {
-                        const item = (arr.call(.GetValue, &scope, .fo(g.sdk), .{i}) catch continue) orelse continue;
-                        new_arr.call(.SetValue, &scope, .fo(g.sdk), .{ item, i }) catch continue;
+                        const item = (arr.getValue(i, &scope, .fo(g.sdk)) catch continue) orelse continue;
+                        new_arr.setValue(item, i, &scope, .fo(g.sdk)) catch continue;
                     }
                 }
 
@@ -218,7 +218,7 @@ fn init(api: re.Api) !void {
                         .fo(g.sdk),
                         .{ SaveSlotCategory.game, i },
                     ) catch continue) orelse continue;
-                    new_arr.call(.SetValue, &scope, .fo(g.sdk), .{ new_save_info, i }) catch continue;
+                    new_arr.setValue(new_save_info, i, &scope, .fo(g.sdk)) catch continue;
                     new_save_info.managed.addRef(.fo(g.sdk));
                 }
 
@@ -305,15 +305,21 @@ fn expandGamePartition(save_mgr_mo: re.api.sdk.ManagedObject) !bool {
         log.err("Could not get partitions array", .{});
         return false;
     });
-    const partitions_len: usize = @intCast(try partitions_arr.call(.GetLength, &scope, .fo(g.sdk), .{0}));
+    const partitions_len: usize = @intCast(try partitions_arr.getLength(&scope, .fo(g.sdk)));
     log.info("Found {} partitions in Default_0 segment", .{partitions_len});
 
     var game_partition: ?SaveSlotPartition = null;
     var game_partition_slots: i32 = 0;
 
     for (0..partitions_len) |i| {
-        const mo = (try partitions_arr.call(.GetValue, &scope, .fo(g.sdk), .{i})) orelse continue;
-        const partition = SaveSlotPartition.init(&g.interop_cache, .fo(g.sdk), mo) catch continue;
+        const mo = (try partitions_arr.getValue(i, &scope, .fo(g.sdk))) orelse continue;
+        const partition = SaveSlotPartition.init(&g.interop_cache, .fo(g.sdk), mo) catch |e| {
+            log.warn("Failed to init SaveSlotPartition for partition {}: {}", .{ i, e });
+            if (g.interop_cache.hasDiagnostics()) {
+                log.warn("Diagnostics: \n{s}", .{g.interop_cache.ownDiagnostics() catch continue});
+            }
+            continue;
+        };
 
         const usage = partition.get(._Usage, &scope, .fo(g.sdk)) catch continue;
         const slot_count = partition.get(._SlotCount, &scope, .fo(g.sdk)) catch continue;

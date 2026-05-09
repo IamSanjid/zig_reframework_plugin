@@ -65,15 +65,18 @@ pub const TypeDefinition = extern struct {
         return out[0..out_len];
     }
 
+    // Needs to be adjusted with the C++ REFramework function
+    // https://github.com/praydog/REFramework/blob/c4b1314820d20255febf7834903e8cedb669b49c/src/mods/PluginLoader.cpp#L217
     pub fn getFullNameAlloc(
         self: Self,
         sdk: Verified(API.REFrameworkSDKData, .{ .type_definition = .get_full_name }),
         allocator: std.mem.Allocator,
     ) (REFrameworkError || std.mem.Allocator.Error)![]u8 {
-        var buf = try allocator.alloc(u8, 256);
-        errdefer allocator.free(buf);
-
+        var size: usize = 256;
         while (true) {
+            const buf = try allocator.alloc(u8, size);
+            errdefer allocator.free(buf);
+
             var out_len: c_uint = 0;
             const result = sdk.safe().type_definition.safe().get_full_name(
                 self.handle(),
@@ -82,13 +85,15 @@ pub const TypeDefinition = extern struct {
                 &out_len,
             );
 
-            if (result == API.REFRAMEWORK_ERROR_OUT_TOO_SMALL or out_len > buf.len) {
-                buf = try allocator.realloc(buf, @max(buf.len * 2, @as(usize, out_len)));
+            if (result == API.REFRAMEWORK_ERROR_OUT_TOO_SMALL) {
+                allocator.free(buf);
+                size *= 2; // double and retry
                 continue;
             }
 
             try re_error.mapResult(result);
-            return buf[0..out_len];
+            // shrink to actual size
+            return allocator.realloc(buf, out_len);
         }
     }
 

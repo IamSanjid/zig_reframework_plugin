@@ -27,6 +27,8 @@ const Scope = @This();
 
 pub const method_specs = api.specs.merge(.{ .invoke, .is_static }, MethodMetadata.method_specs);
 pub const field_specs = api.specs.merge(.{ .get_data_raw, .is_static }, FieldMetadata.field_specs);
+pub const reflection_property_specs = .get_getter;
+pub const type_info_specs = .get_reflection_property_descriptor;
 pub const managed_object_specs = .get_type_definition;
 pub const functions_sepcs = .get_tdb;
 
@@ -530,6 +532,60 @@ pub inline fn setStaticFieldWithInterop(
     const tdb = api.sdk.getTdb(.fo(sdk)) orelse return error.TdbNull;
     const type_def = tdb.findType(.fo(sdk), managed_type_name) orelse return error.NoTypeDefFound;
     return try self.setStaticFieldFromTypeDef(type_def, field_name, interop, .fo(sdk), value);
+}
+
+pub fn getReflectionPropertyFromTypeDef(
+    self: *Scope,
+    managed: api.sdk.ManagedObject,
+    type_def: api.sdk.TypeDefinition,
+    prop_name: [:0]const u8,
+    comptime T: type,
+    comptime interop: ?ToZigInterop(T),
+    sdk: api.VerifiedSdk(.{
+        .reflection_property = reflection_property_specs,
+        .type_definition = .all,
+        .type_info = type_info_specs,
+    }),
+) !T {
+    @setRuntimeSafety(false);
+    // TODO: Cache reflection properties metadata?
+    const type_info = type_def.getTypeInfo(.fo(sdk)) orelse return error.InvalidTypeInfo;
+    const prop_desc = type_info.getReflectionPropertyDescriptor(.fo(sdk), prop_name) orelse return error.ReflectionPropertyNotFound;
+    var data = prop_desc.getDataRaw(.fo(sdk), managed);
+    const getInterop = interop orelse defaultToZigInterop(T);
+    return getInterop(&sdk, self, type_def, &data);
+}
+
+pub inline fn getReflectionProperty(
+    self: *Scope,
+    managed: api.sdk.ManagedObject,
+    property_name: [:0]const u8,
+    comptime T: type,
+    sdk: api.VerifiedSdk(.{
+        .managed_object = managed_object_specs,
+        .reflection_property = reflection_property_specs,
+        .type_definition = .all,
+        .type_info = type_info_specs,
+    }),
+) !T {
+    return self.getReflectionPropertyWithInterop(managed, property_name, T, defaultToZigInterop(T), .fo(sdk));
+}
+
+pub inline fn getReflectionPropertyWithInterop(
+    self: *Scope,
+    managed: api.sdk.ManagedObject,
+    property_name: [:0]const u8,
+    comptime T: type,
+    comptime interop: ToZigInterop(T),
+    sdk: api.VerifiedSdk(.{
+        .managed_object = managed_object_specs,
+        .reflection_property = reflection_property_specs,
+        .type_definition = .all,
+        .type_info = type_info_specs,
+    }),
+) !T {
+    const type_def = managed.getTypeDefinition(.fo(sdk)) orelse return error.NoTypeDefFound;
+    return self.getReflectionPropertyFromTypeDef(managed, type_def, property_name, T, interop, .fo(sdk));
 }
 
 pub const buildMethodArgs = in.buildMethodArgs;
