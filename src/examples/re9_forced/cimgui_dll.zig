@@ -27,12 +27,12 @@ pub var igSameLine: *const fn (offset_from_start_x: f32, spacing: f32) callconv(
 pub var igNewLine: *const fn () callconv(.c) void = undefined;
 pub var igInputScalar: *const fn (
     label: [*c]const u8,
-    data_type: c_int,
+    data_type: cimgui.ImGuiDataType,
     p_data: ?*anyopaque,
     p_step: ?*const anyopaque,
     p_step_fast: ?*const anyopaque,
     format: [*c]const u8,
-    flags: c_int,
+    flags: cimgui.ImGuiInputTextFlags,
 ) callconv(.c) bool = undefined;
 pub var igButton: *const fn (label: [*c]const u8, size: cimgui.ImVec2) callconv(.c) bool = undefined;
 pub var igPushStyleColor_U32: *const fn (idx: c_int, col: c_uint) callconv(.c) void = undefined;
@@ -62,12 +62,21 @@ pub var igInputText: *const fn (
     label: [*c]const u8,
     buf: [*c]u8,
     buf_size: usize,
-    flags: c_int,
+    flags: cimgui.ImGuiInputTextFlags,
     callback: ?*const fn ([*c]cimgui.ImGuiInputTextCallbackData) c_int,
     user_data: ?*anyopaque,
 ) callconv(.c) bool = undefined;
 pub var igIsMouseReleased_Nil: *const fn (key: cimgui.ImGuiKey) callconv(.c) bool = undefined;
 pub var igSetClipboardText: *const fn (text: [*c]const u8) callconv(.c) void = undefined;
+pub var igGetContentRegionAvail: *const fn ([*c]cimgui.ImVec2) callconv(.c) void = undefined;
+pub var igSetNextItemWidth: *const fn (width: f32) callconv(.c) void = undefined;
+pub var igGetStyle: *const fn () callconv(.c) [*c]cimgui.ImGuiStyle = undefined;
+pub var igCalcTextSize: *const fn (pOut: [*c]cimgui.ImVec2, text: [*c]const u8, text_end: [*c]const u8, hide_text_after_double_hash: bool, wrap_width: f32) callconv(.c) void = undefined;
+pub var ImGuiListClipper_Begin: *const fn (self: [*c]cimgui.ImGuiListClipper, items_count: c_int, items_height: f32) callconv(.c) void = undefined;
+pub var ImGuiListClipper_ImGuiListClipper: *const fn () callconv(.c) [*c]cimgui.ImGuiListClipper = undefined;
+pub var ImGuiListClipper_destroy: *const fn (self: [*c]cimgui.ImGuiListClipper) callconv(.c) void = undefined;
+pub var ImGuiListClipper_End: *const fn (self: [*c]cimgui.ImGuiListClipper) callconv(.c) void = undefined;
+pub var ImGuiListClipper_Step: *const fn (self: [*c]cimgui.ImGuiListClipper) callconv(.c) bool = undefined;
 
 var cimgui_dll_module: windows.HINSTANCE = undefined;
 
@@ -161,6 +170,24 @@ pub fn init() !void {
         return error.igIsMouseReleased_NilNotFound);
     igSetClipboardText = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSetClipboardText") orelse
         return error.igSetClipboardTextNotFound);
+    igGetContentRegionAvail = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igGetContentRegionAvail") orelse
+        return error.igGetContentRegionAvailNotFound);
+    igSetNextItemWidth = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSetNextItemWidth") orelse
+        return error.igSetNextItemWidthNotFound);
+    igGetStyle = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igGetStyle") orelse
+        return error.igGetStyleNotFound);
+    igCalcTextSize = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igCalcTextSize") orelse
+        return error.igCalcTextSizeNotFound);
+    ImGuiListClipper_ImGuiListClipper = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "ImGuiListClipper_ImGuiListClipper") orelse
+        return error.ImGuiListClipper_ImGuiListClipperNotFound);
+    ImGuiListClipper_destroy = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "ImGuiListClipper_destroy") orelse
+        return error.ImGuiListClipper_destroyNotFound);
+    ImGuiListClipper_Begin = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "ImGuiListClipper_Begin") orelse
+        return error.ImGuiListClipper_BeginNotFound);
+    ImGuiListClipper_End = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "ImGuiListClipper_End") orelse
+        return error.ImGuiListClipper_EndNotFound);
+    ImGuiListClipper_Step = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "ImGuiListClipper_Step") orelse
+        return error.ImGuiListClipper_StepNotFound);
 
     initialized = true;
 }

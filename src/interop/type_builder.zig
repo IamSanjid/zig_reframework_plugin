@@ -170,14 +170,14 @@ fn ManagedObject(comptime Builder: type) type {
 
         pub fn createInstance(cache: *ManagedTypeCache, sdk: InteropSdk, flags: api.CreateInstanceFlags) !Instance {
             errdefer cache.appendDiagnostics("[createInstance]type={s}", .{fullTypeName()}) catch {};
-            const runtime = try get(cache, sdk);
+            const runtime = try get(cache, .fo(sdk));
             const managed = runtime.metadata.type_def.createInstance(.fo(sdk), flags) orelse return error.CreateInstanceFailed;
             return runtime.forcedInstance(managed);
         }
 
         pub fn createInstanceWithTdb(cache: *ManagedTypeCache, sdk: InteropSdk, tdb: api.sdk.Tdb, flags: api.CreateInstanceFlags) !Instance {
             errdefer cache.appendDiagnostics("[createInstanceWithTdb]type={s}", .{fullTypeName()}) catch {};
-            const runtime = try getWithTdb(cache, sdk, tdb);
+            const runtime = try getWithTdb(cache, .fo(sdk), tdb);
             const managed = runtime.metadata.type_def.createInstance(.fo(sdk), flags) orelse return error.CreateInstanceFailed;
             return runtime.forcedInstance(managed);
         }
@@ -654,7 +654,7 @@ fn ManagedObjectTypeMethodBuilderImpl(
         }
 
         /// Builds current "Method", adds it to the parent "Type Builder" and returns it.
-        fn BuildMethod() type {
+        pub fn BuildMethod() type {
             var methods: [TypeBuilder.MethodList.MethodsLen + 1]type = undefined;
             inline for (0..TypeBuilder.MethodList.MethodsLen) |i| {
                 methods[i] = TypeBuilder.MethodList.Methods[i];

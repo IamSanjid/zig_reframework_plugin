@@ -31,12 +31,17 @@ const ObjectiveID = managed_types.ObjectiveID;
 const ItemCore = managed_types.ItemCore;
 const InteractActionItemPickup = managed_types.InteractActionItemPickup;
 const LevelFlowManagedObject = managed_types.LevelFlowManagedObject;
+const LevelFlowObject = managed_types.LevelFlowObject;
+const LevelFlowController = managed_types.LevelFlowController;
 const GameObject = managed_types.GameObject;
 const LevelProgressID = managed_types.LevelProgressID;
 const BT_ActionArg = managed_types.BT_ActionArg;
 const LFBTA_FSM_GameJumpAction = managed_types.LFBTA_FSM_GameJumpAction;
 const LFBTA_FSM_GameJumpAction_GameJumpData = managed_types.LFBTA_FSM_GameJumpAction_GameJumpData;
+const GameJumpFlowObject = managed_types.GameJumpFlowObject;
+const GameJumpData = managed_types.GameJumpData;
 
+const ItemManager = managed_types.ItemManager;
 const CharacterManager = managed_types.CharacterManager;
 const InventoryManager = managed_types.InventoryManager;
 const ObjectiveManager = managed_types.ObjectiveManager;
@@ -46,7 +51,9 @@ const LevelFlowManager = managed_types.LevelFlowManager;
 
 const GenericDictionary = managed_types.GenericDictionary;
 const ConcurrentCatalogDictionary = managed_types.ConcurrentCatalogDictionary;
-const ItemManager = managed_types.ItemManager;
+
+const BehaviorTree = @import("behavior_tree.zig").BehaviorTree;
+const BehaviorTreeManaged = managed_types.BehaviorTree;
 
 pub fn pluginLog(
     comptime message_level: std.log.Level,
@@ -87,6 +94,7 @@ pub const g = struct {
     pub var sdk: re.api.VerifiedSdk(verified_sdk_spec) = undefined;
     pub var tdb: re.sdk.Tdb = undefined;
 
+    pub var item_manager: ItemManager = undefined;
     pub var character_manager: CharacterManager = undefined;
     pub var inventory_manager: InventoryManager = undefined;
     pub var objective_manager: ObjectiveManager = undefined;
@@ -96,6 +104,7 @@ pub const g = struct {
 
     pub var items: Items = undefined;
     pub var level_flow_managed_objects: LevelFlowManagedObjects = undefined;
+    pub var btree_management: BehaviorTreeManagement = undefined;
     pub var item_pickups: ItemPickups = undefined;
     pub var player: ?Player = null;
 
@@ -107,13 +116,17 @@ pub const g = struct {
         sdk = try api.verifiedSdk(verified_sdk_spec);
         tdb = re.sdk.getTdb(.fo(g.sdk)) orelse return error.TdbNotFound;
 
-        const item_mgr_mo = re.sdk.getManagedSingleton(.fo(g.sdk), "app.ItemManager") orelse return error.ItemManagerNotFound;
-        items = .init(@ptrCast(@alignCast(item_mgr_mo.raw)));
-
+        items = .{ .arena = .init(allocator) };
         item_pickups = .{ .arena = .init(allocator) };
-
         level_flow_managed_objects = .{ .arena = .init(allocator) };
+        btree_management = .{ .arena = .init(allocator) };
 
+        item_manager = try ItemManager.init(
+            &g.interop_cache,
+            .fo(g.sdk),
+            re.sdk.getManagedSingleton(.fo(g.sdk), ItemManager.fullTypeName()) orelse
+                return error.ItemManagerNotFound,
+        );
         character_manager = try CharacterManager.init(
             &g.interop_cache,
             .fo(g.sdk),
@@ -229,7 +242,8 @@ pub const g = struct {
         defer scope.deinit();
 
         const pickups = item_pickups.map.get(item_id) orelse return error.PickupNotFound;
-        const pickup = pickups.getLast() orelse return;
+        const pickup_detail = pickups.getLast() orelse return;
+        const pickup = pickup_detail.pickup;
 
         const item_core = pickup.get(._ItemCore, &scope, .fo(g.sdk)) catch return;
 
@@ -243,10 +257,85 @@ pub const g = struct {
         try evt.set(._ItemCore, &scope, .fo(g.sdk), item_core);
         return pickup.call(.onProcess, &scope, .fo(g.sdk), .{evt.managed});
     }
+
+    pub fn startFlowActions(flow: LevelFlowManagedObject) !void {
+        const component: *interop.ViaComponent = @ptrCast(flow.managed.raw);
+
+        const BehaviorTreeT = try interop_cache.resolve(BehaviorTree.full_type_name, tdb, .fo(sdk));
+
+        var child_component = component.childComponent();
+        while (child_component) |child| : (child_component = child.childComponent()) {
+            if (child == component) {
+                break;
+            }
+
+            const child_mo = re.sdk.ManagedObject{ .raw = @ptrCast(@alignCast(child)) };
+            if (!child_mo.isManagedObject(.fo(sdk))) {
+                log.debug("Found non-managed-object child component: 0x{x}", .{@intFromPtr(child)});
+                continue;
+            }
+            const child_type_def = child_mo.getTypeDefinition(.fo(sdk)) orelse continue;
+            if (!child_type_def.isDerivedFrom(.fo(sdk), BehaviorTreeT.type_def_metadata.def)) {
+                continue;
+            }
+
+            try startBehaviorTree(.fo(child_mo.raw));
+        }
+    }
+
+    pub fn startFlowActionsNative(flow: LevelFlowManagedObject) !void {
+        const component: *interop.ViaComponent = @ptrCast(flow.managed.raw);
+
+        const BehaviorTreeT = try interop_cache.resolve(BehaviorTree.full_type_name, tdb, .fo(sdk));
+
+        var child_component = component.childComponent();
+        while (child_component) |child| : (child_component = child.childComponent()) {
+            if (child == component) {
+                break;
+            }
+
+            const child_mo = re.sdk.ManagedObject{ .raw = @ptrCast(@alignCast(child)) };
+            if (!child_mo.isManagedObject(.fo(sdk))) {
+                log.debug("Found non-managed-object child component: 0x{x}", .{@intFromPtr(child)});
+                continue;
+            }
+            const child_type_def = child_mo.getTypeDefinition(.fo(sdk)) orelse continue;
+            if (!child_type_def.isDerivedFrom(.fo(sdk), BehaviorTreeT.type_def_metadata.def)) {
+                continue;
+            }
+
+            try startBehaviorTreeNative(.fo(child_mo.raw));
+        }
+    }
+
+    pub fn startBehaviorTree(tree: *BehaviorTree) !void {
+        var scope = interop_cache.newScope(allocator);
+        defer scope.deinit();
+
+        const handles = tree.getTrees();
+        for (handles) |handle| {
+            const tree_obj = handle.core.tree_object orelse continue;
+            const action_arg = handle.core.action_arg;
+            const actions_ptr = tree_obj.actions;
+            const actions = actions_ptr.items[0..actions_ptr.len];
+
+            for (actions) |action| {
+                action_arg.owner_component = handle.core.owner_component;
+                action_arg.owner_behavior_tree_core = &handle.core;
+
+                try scope.callMethod(action, "start(via.behaviortree.ActionArg)", void, .fo(sdk), .{action_arg});
+            }
+        }
+    }
+
+    pub inline fn startBehaviorTreeNative(tree: *BehaviorTree) !void {
+        // var vm_context = re.sdk.getVmContext(.fo(g.sdk)) orelse return;
+        // tree.startBehavior(&vm_context);
+        tree.startBehavior(null);
+    }
 };
 
 pub const Items = struct {
-    manager: *ItemManager,
     arena: std.heap.ArenaAllocator,
     categories: std.AutoHashMapUnmanaged(ItemCategory, [:0]const u8) = .empty,
     items_cache: Cache = .empty,
@@ -353,13 +442,6 @@ pub const Items = struct {
         }
     };
 
-    fn init(manager: *ItemManager) Items {
-        return Items{
-            .manager = manager,
-            .arena = .init(g.allocator),
-        };
-    }
-
     fn deinit(self: *Items) void {
         self.arena.deinit();
     }
@@ -373,10 +455,11 @@ pub const Items = struct {
 
     pub fn repopulate(self: *Items) !void {
         self.reset();
-        try self.populateItemCategories();
+        try self.populateCategories();
+        try self.populate();
     }
 
-    fn populateItemCategories(self: *Items) !void {
+    fn populateCategories(self: *Items) !void {
         const ItemCategoryT = try g.interop_cache.resolve("app.ItemCategory", g.tdb, .fo(g.sdk));
         var scope = g.interop_cache.newScope(g.allocator);
         defer scope.deinit();
@@ -410,8 +493,31 @@ pub const Items = struct {
         log.debug("ItemCategories: {}", .{self.categories.count()});
     }
 
+    fn populate(self: *Items) !void {
+        var scope = g.interop_cache.newScope(g.allocator);
+        defer scope.deinit();
+
+        const item_catalog: *ConcurrentCatalogDictionary = try g.item_manager.get(._ItemCatalog, &scope, .fo(g.sdk));
+
+        const dict = item_catalog._Dict;
+
+        self.last_version = dict._version;
+
+        const entries = interop.SystemArrayEntries.unsafe(dict._entries, .fo(g.sdk));
+        if (entries.contained_type_def.getVmObjType(.fo(g.sdk)) != .valtype) {
+            return error.UnexpectedContainedType;
+        }
+
+        var iter = IteratorEntries{
+            .owner = self,
+            .scope = &scope,
+            .entries = entries,
+        };
+        while (try iter.next()) |_| {}
+    }
+
     pub fn iterator(self: *Items, scope: *interop.Scope) !Iterator {
-        const item_catalog: *ConcurrentCatalogDictionary = self.manager._ItemCatalog;
+        const item_catalog: *ConcurrentCatalogDictionary = try g.item_manager.get(._ItemCatalog, scope, .fo(g.sdk));
 
         const dict = item_catalog._Dict;
 
@@ -452,7 +558,10 @@ pub const Items = struct {
 
 pub const ItemPickups = struct {
     collection: std.ArrayList(InteractActionItemPickup) = .empty,
-    map: std.AutoHashMapUnmanaged(ItemId, std.ArrayList(InteractActionItemPickup)) = .empty,
+    map: std.AutoHashMapUnmanaged(ItemId, std.ArrayList(struct {
+        pickup: InteractActionItemPickup,
+        detail: ItemDetails,
+    })) = .empty,
     arena: std.heap.ArenaAllocator,
 
     inline fn collect(self: *ItemPickups, pickup: InteractActionItemPickup) !void {
@@ -469,7 +578,8 @@ pub const ItemPickups = struct {
 
         const pickups = pickups_entry.value_ptr;
 
-        for (pickups.items, 0..) |pickup, i| {
+        for (pickups.items, 0..) |pickup_detail, i| {
+            const pickup = pickup_detail.pickup;
             const pickup_item_core = pickup.get(._ItemCore, &scope, .fo(g.sdk)) catch continue;
             if (pickup_item_core.managed.raw == item_core.managed.raw) {
                 _ = pickups.swapRemove(i);
@@ -491,8 +601,10 @@ pub const ItemPickups = struct {
             const item_core = pickup.get(._ItemCore, &scope, .fo(g.sdk)) catch continue;
             const id = item_core.get(._ItemIDCache, &scope, .fo(g.sdk)) catch continue;
 
+            const detail = g.items.items_cache.get(id) orelse return error.ItemDetailsNotFound;
+
             const entry = try self.map.getOrPutValue(arena, id, .empty);
-            try entry.value_ptr.append(arena, pickup);
+            try entry.value_ptr.append(arena, .{ .pickup = pickup, .detail = detail });
         }
 
         self.collection.clearRetainingCapacity();
@@ -526,7 +638,7 @@ pub const InvenotryManagement = struct {
 
         const panel_items = try inventory.get(._PanelItems, scope, .fo(g.sdk));
 
-        var entries = interop.SystemArrayEntries.unsafe(panel_items._entries, .fo(g.sdk));
+        const entries = interop.SystemArrayEntries.unsafe(panel_items._entries, .fo(g.sdk));
         if (entries.contained_type_def.getVmObjType(.fo(g.sdk)) != .valtype) {
             return error.UnexpectedContainedType;
         }
@@ -697,22 +809,240 @@ pub const ObjectiveManagement = struct {
     }
 };
 
+pub const BehaviorTreeManagement = struct {
+    arena: std.heap.ArenaAllocator,
+    mutex: std.Io.Mutex = .init,
+    tree_actions: std.Deque(Action) = .empty,
+
+    pub const ActionTag = enum {
+        start,
+        start_native,
+    };
+    pub const Action = union(ActionTag) {
+        start: *BehaviorTree,
+        start_native: *BehaviorTree,
+
+        fn fromTag(tag: ActionTag, payload: anytype) Action {
+            // TODO: Update this when more action types are added..
+            if (@TypeOf(payload) != *BehaviorTree) @compileError("payload must be a pointer to BehaviorTree");
+            return switch (tag) {
+                .start => .{ .start = payload },
+                .start_native => .{ .start_native = payload },
+            };
+        }
+    };
+
+    pub fn queueFlowBTreeAction(self: *BehaviorTreeManagement, action: ActionTag, flow: LevelFlowManagedObject) !void {
+        try self.mutex.lock(g.io);
+        defer self.mutex.unlock(g.io);
+        const arena = self.arena.allocator();
+
+        const component: *interop.ViaComponent = @ptrCast(flow.managed.raw);
+
+        const BehaviorTreeT = try g.interop_cache.resolve(BehaviorTree.full_type_name, g.tdb, .fo(g.sdk));
+
+        var child_component = component.childComponent();
+        while (child_component) |child| : (child_component = child.childComponent()) {
+            if (child == component) {
+                break;
+            }
+
+            const child_mo = re.sdk.ManagedObject{ .raw = @ptrCast(@alignCast(child)) };
+            if (!child_mo.isManagedObject(.fo(g.sdk))) {
+                log.debug("Found non-managed-object child component: 0x{x}", .{@intFromPtr(child)});
+                continue;
+            }
+            const child_type_def = child_mo.getTypeDefinition(.fo(g.sdk)) orelse continue;
+            if (!child_type_def.isDerivedFrom(.fo(g.sdk), BehaviorTreeT.type_def_metadata.def)) {
+                continue;
+            }
+
+            try self.tree_actions.pushBack(arena, .fromTag(action, BehaviorTree.fo(child_mo.raw)));
+        }
+    }
+
+    pub fn queueAction(self: *BehaviorTreeManagement, action: Action) !void {
+        try self.mutex.lock(g.io);
+        defer self.mutex.unlock(g.io);
+        try self.tree_actions.pushBack(self.arena.allocator(), action);
+    }
+
+    pub fn performSingleAction(self: *BehaviorTreeManagement) !void {
+        const next_action = blk: {
+            try self.mutex.lock(g.io);
+            defer self.mutex.unlock(g.io);
+
+            break :blk self.tree_actions.popFront();
+        };
+        if (next_action) |action| {
+            try switch (action) {
+                .start => |tree| g.startBehaviorTree(tree),
+                .start_native => |tree| g.startBehaviorTreeNative(tree),
+            };
+        }
+    }
+
+    pub fn reset(self: *BehaviorTreeManagement) void {
+        self.mutex.lockUncancelable(g.io);
+        defer self.mutex.unlock(g.io);
+        _ = self.arena.reset(.retain_capacity);
+        self.tree_actions = .empty;
+    }
+};
+
 pub const LevelFlowManagedObjects = struct {
-    collection: std.ArrayList(LevelFlowManagedObject) = .empty,
+    collection: std.ArrayList(LevelFlowObject) = .empty,
+    name_hashes: std.AutoHashMapUnmanaged(u32, i32) = .empty,
     arena: std.heap.ArenaAllocator,
 
-    inline fn collect(self: *LevelFlowManagedObjects, level_flow_mo: LevelFlowManagedObject) !void {
+    inline fn update(self: *LevelFlowManagedObjects) !void {
+        self.reset();
+
+        const arena = self.arena.allocator();
+        var scope = g.interop_cache.newScope(arena);
+        defer scope.deinit();
+
+        const managed_objects: *GenericDictionary = g.level_flow_manager.get(._ManagedObjectList, &scope, .fo(g.sdk)) catch return;
+        const entries = interop.SystemArrayEntries.unsafe(managed_objects._entries, .fo(g.sdk));
+        if (entries.contained_type_def.getVmObjType(.fo(g.sdk)) != .valtype) {
+            return error.UnexpectedContainedType;
+        }
+        const element_size = entries.contained_type_def.getValueTypeSize(.fo(g.sdk));
+        for (0..entries.len) |idx| {
+            const entry_ptr_usize = @intFromPtr(entries.ptr) + (idx * element_size);
+            const managed_object_list = scope.getFieldFromTypeDef(
+                @ptrFromInt(entry_ptr_usize),
+                entries.contained_type_def,
+                "value",
+                re.sdk.ManagedObject,
+                null,
+                false,
+                .fo(g.sdk),
+            ) catch continue;
+            const key = scope.getFieldFromTypeDef(
+                @ptrFromInt(entry_ptr_usize),
+                entries.contained_type_def,
+                "key",
+                u32,
+                null,
+                false,
+                .fo(g.sdk),
+            ) catch continue;
+            const items = scope.getField(managed_object_list, "_items", SystemArray, .fo(g.sdk)) catch continue;
+            const len = items.getLength(&scope, .fo(g.sdk)) catch continue;
+            const name_hash_entry = try self.name_hashes.getOrPutValue(arena, key, 0);
+            for (0..@intCast(len)) |i| {
+                const mo = (items.getValue(i, &scope, .fo(g.sdk)) catch continue) orelse continue;
+                const flow = try LevelFlowManagedObject.init(&g.interop_cache, .fo(g.sdk), mo);
+                const flow_name = try flow.get(._FlowName, &scope, .fo(g.sdk));
+                const name_hash = try flow_name.get(._Hash, &scope, .fo(g.sdk));
+                name_hash_entry.value_ptr.* += 1;
+                // storeToLocal has to be called to get rest of the data
+                try self.collection.append(arena, .{ .component = flow, .name_hash = name_hash });
+            }
+        }
+
+        try g.level_flow_managed_objects.storeToLocal();
+    }
+
+    fn getWithChildComponentType(self: *LevelFlowManagedObjects, type_def: re.sdk.TypeDefinition) ![]LevelFlowManagedObject {
         const arena = self.arena.allocator();
 
         var scope = g.interop_cache.newScope(arena);
         defer scope.deinit();
 
-        try self.collection.append(arena, level_flow_mo);
+        var result: std.ArrayList(LevelFlowManagedObject) = .empty;
+        defer result.deinit(arena);
+
+        for (self.collection.items) |flow_obj| {
+            const flow = flow_obj.component;
+            const component: *interop.ViaComponent = @ptrCast(flow.managed.raw);
+            var child_component = component.childComponent();
+            while (child_component) |child| : (child_component = child.childComponent()) {
+                if (child == component) {
+                    break;
+                }
+
+                const child_mo = re.sdk.ManagedObject{ .raw = @ptrCast(@alignCast(child)) };
+                if (!child_mo.isManagedObject(.fo(g.sdk))) {
+                    log.debug("Found non-managed-object child component: 0x{x}", .{@intFromPtr(child)});
+                    continue;
+                }
+                const child_type_def = child_mo.getTypeDefinition(.fo(g.sdk)) orelse continue;
+                if (child_type_def.isDerivedFrom(.fo(g.sdk), type_def)) {
+                    try result.append(arena, flow);
+                }
+            }
+        }
+
+        return result.toOwnedSlice(arena);
+    }
+
+    fn storeToLocal(self: *LevelFlowManagedObjects) !void {
+        const arena = self.arena.allocator();
+
+        var scope = g.interop_cache.newScope(arena);
+        defer scope.deinit();
+
+        const BehaviorTreeT = try g.interop_cache.resolve(BehaviorTree.full_type_name, g.tdb, .fo(g.sdk));
+
+        for (self.collection.items) |*flow_obj| {
+            const flow = flow_obj.component;
+            const component: *interop.ViaComponent = @ptrCast(flow.managed.raw);
+
+            const game_obj = try GameObject.init(&g.interop_cache, .fo(g.sdk), component.getOwner());
+
+            const game_obj_name_sys_str = try game_obj.call(.get_Name, &scope, .fo(g.sdk), .{});
+            const game_obj_name = try std.unicode.utf16LeToUtf8AllocZ(arena, game_obj_name_sys_str.data);
+
+            var action_names: std.ArrayList([:0]const u8) = .empty;
+            defer action_names.deinit(arena);
+
+            var child_component = component.childComponent();
+            while (child_component) |child| : (child_component = child.childComponent()) {
+                if (child == component) {
+                    break;
+                }
+
+                const child_mo = re.sdk.ManagedObject{ .raw = @ptrCast(@alignCast(child)) };
+                if (!child_mo.isManagedObject(.fo(g.sdk))) {
+                    log.debug("Found non-managed-object child component: 0x{x}", .{@intFromPtr(child)});
+                    continue;
+                }
+                const child_type_def = child_mo.getTypeDefinition(.fo(g.sdk)) orelse continue;
+                if (!child_type_def.isDerivedFrom(.fo(g.sdk), BehaviorTreeT.type_def_metadata.def)) {
+                    continue;
+                }
+
+                const tree: *BehaviorTree = .fo(child_mo.raw);
+                const handles = tree.getTrees();
+                for (handles) |handle| {
+                    const tree_obj = handle.core.tree_object orelse continue;
+                    const actions_ptr = tree_obj.actions;
+                    const actions = actions_ptr.items[0..actions_ptr.len];
+                    for (actions) |action| {
+                        const type_def = action.getTypeDefinition(.fo(g.sdk)) orelse continue;
+                        const type_name = try type_def.getFullNameAlloc(.fo(g.sdk), arena);
+                        defer arena.free(type_name);
+                        const type_name_z = try arena.dupeSentinel(u8, type_name, 0);
+                        try action_names.append(arena, type_name_z);
+                    }
+                }
+            }
+
+            if (action_names.items.len > 0) {
+                flow_obj.data = .{
+                    .owner_name = game_obj_name,
+                    .action_names = try action_names.toOwnedSlice(arena),
+                };
+            }
+        }
     }
 
     fn reset(self: *LevelFlowManagedObjects) void {
         _ = self.arena.reset(.retain_capacity);
         self.collection = .empty;
+        self.name_hashes = .empty;
     }
 };
 
@@ -722,6 +1052,7 @@ pub const Player = struct {
     hand_inventory: InvenotryManagement = .{},
     item_box_inventory: InvenotryManagement = .{},
     objective_mg: ObjectiveManagement = .{},
+    game_jump_actions: std.ArrayList(GameJumpFlowObject) = .empty,
 
     fn init() !Player {
         var scope = g.interop_cache.newScope(g.allocator);
@@ -773,38 +1104,88 @@ pub const Player = struct {
         try self.objective_mg.update(arena.allocator(), &self.scope);
     }
 
+    pub fn checkGameJumps(self: *Player, flows: []LevelFlowManagedObject) !void {
+        defer self.scope.reset();
+        const arena = Arena(.player_game_jumps);
+        _ = arena.reset(.retain_capacity);
+        self.game_jump_actions = .empty;
+
+        const LevelFlowGameJumpActionParamT = try managed_types.LFBTA_FSM_GameJumpAction_LevelFlowGameJumpActionParam
+            .Runtime
+            .get(&g.interop_cache, .fo(g.sdk));
+
+        for (flows) |flow| {
+            const component: *interop.ViaComponent = @ptrCast(flow.managed.raw);
+            const game_obj = try GameObject.init(&g.interop_cache, .fo(g.sdk), component.getOwner());
+
+            const game_obj_name_sys_str = try game_obj.call(.get_Name, &self.scope, .fo(g.sdk), .{});
+            const game_obj_name = try std.unicode.utf16LeToUtf8AllocZ(arena.allocator(), game_obj_name_sys_str.data);
+
+            var game_jump_datas: std.ArrayList(GameJumpData) = .empty;
+            defer game_jump_datas.deinit(arena.allocator());
+
+            var child_component = component.childComponent();
+            while (child_component) |child| : (child_component = child.childComponent()) {
+                if (child == component) {
+                    break;
+                }
+
+                const child_mo = re.sdk.ManagedObject{ .raw = @ptrCast(@alignCast(child)) };
+                if (!child_mo.isManagedObject(.fo(g.sdk))) {
+                    log.debug("Found non-managed-object child component: 0x{x}", .{@intFromPtr(child)});
+                    continue;
+                }
+
+                if (LevelFlowGameJumpActionParamT.isInstanceOf(.fo(g.sdk), child_mo)) {
+                    const param = LevelFlowGameJumpActionParamT.forcedInstance(child_mo);
+                    const param_datas: SystemArray = try param.call(.get_ParamArray, &self.scope, .fo(g.sdk), .{});
+                    const len = try param_datas.getLength(&self.scope, .fo(g.sdk));
+                    for (0..@intCast(len)) |i| {
+                        const data_mo = (try param_datas.getValue(i, &self.scope, .fo(g.sdk))) orelse continue;
+                        const data = try LFBTA_FSM_GameJumpAction_GameJumpData.init(&g.interop_cache, .fo(g.sdk), data_mo);
+                        const data_details = try GameJumpData.copyFrom(data, arena.allocator(), &self.scope, .fo(g.sdk));
+                        try game_jump_datas.append(arena.allocator(), data_details);
+                    }
+                }
+            }
+
+            const flow_name = try flow.get(._FlowName, &self.scope, .fo(g.sdk));
+            const name_hash = try flow_name.get(._Hash, &self.scope, .fo(g.sdk));
+
+            try self.game_jump_actions.append(arena.allocator(), .{
+                .owner_component = flow,
+                .name_hash = name_hash,
+                .owner_name = game_obj_name,
+                .jump_datas = try game_jump_datas.toOwnedSlice(arena.allocator()),
+            });
+        }
+    }
+
     fn deinit(self: *Player) void {
         self.scope.deinit();
     }
 };
 
-fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?*interop.MethodMetadata {
-    const type_def = tdb.findType(.fo(g.sdk), type_name) orelse return null;
-    const metadata = try g.interop_cache.getOrCacheMethodMetadata(.fo(g.sdk), type_def, method_sig);
-    return metadata;
-}
-
-fn onStart() !void {
-    g.api.lockLua();
-    defer g.api.unlockLua();
-    try g.items.populateItemCategories();
-}
-
-fn onPlayerInitialized() !void {
-    g.api.lockLua();
-    defer g.api.unlockLua();
-
+pub fn new() !void {
     try g.interop_cache.resetDiagnostics();
+
+    try g.items.repopulate();
 
     log.debug("Collected item-pickups: {}", .{g.item_pickups.collection.items.len});
     try g.item_pickups.mapPickupsWithItemId();
 
+    try g.level_flow_managed_objects.update();
     log.debug("Collected level flow managed objects: {}", .{g.level_flow_managed_objects.collection.items.len});
+    const LevelFlowGameJumpActionParamT = try managed_types.LFBTA_FSM_GameJumpAction_LevelFlowGameJumpActionParam
+        .Runtime
+        .get(&g.interop_cache, .fo(g.sdk));
+    const flows = try g.level_flow_managed_objects.getWithChildComponentType(LevelFlowGameJumpActionParamT.metadata.type_def);
+    log.debug("Found game flows: {}", .{flows.len});
     {
         var scope = g.interop_cache.newScope(g.allocator);
         defer scope.deinit();
 
-        for (g.level_flow_managed_objects.collection.items) |flow| {
+        for (flows) |flow| {
             const component: *interop.ViaComponent = @ptrCast(flow.managed.raw);
             const next_component_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(component.nextComponent() orelse continue)) };
             const next_component = managed_types.LFBTA_FSM_GameJumpAction_LevelFlowGameJumpActionParam.init(&g.interop_cache, .fo(g.sdk), next_component_mo) catch |e| {
@@ -828,21 +1209,69 @@ fn onPlayerInitialized() !void {
                 @intFromPtr(game_obj.managed.raw),
                 @intFromPtr(next_component.managed.raw),
             });
+
+            var child_component = component.childComponent();
+            while (child_component) |child| : (child_component = child.childComponent()) {
+                if (child == component) {
+                    break;
+                }
+
+                const child_mo = re.sdk.ManagedObject{ .raw = @ptrCast(@alignCast(child)) };
+                if (!child_mo.isManagedObject(.fo(g.sdk))) {
+                    log.debug("Found non-managed-object child component: 0x{x}", .{@intFromPtr(child)});
+                    continue;
+                }
+                const type_def = child_mo.getTypeDefinition(.fo(g.sdk)) orelse continue;
+                const type_name = try type_def.getFullNameAlloc(.fo(g.sdk), scope.arena.allocator());
+                log.debug("  Child Component: 0x{x}, Type: {s}", .{
+                    @intFromPtr(child),
+                    type_name,
+                });
+
+                const btree = BehaviorTreeManaged.init(&g.interop_cache, .fo(g.sdk), child_mo) catch continue;
+                const flow_node_name_sys_str = btree.call(.getCurrentNodeName, &scope, .fo(g.sdk), .{0}) catch |e| {
+                    log.err("Error getting current node name: {}, context: {s}", .{ e, try g.interop_cache.ownDiagnostics() });
+                    continue;
+                };
+                const flow_node_name = try std.unicode.utf16LeToUtf8Alloc(scope.arena.allocator(), flow_node_name_sys_str.data);
+                log.debug("    Current Node Name: {s}", .{flow_node_name});
+            }
         }
     }
 
     g.player = try .init();
     try g.player.?.checkInventory();
     try g.player.?.checkObjectives();
+    try g.player.?.checkGameJumps(flows);
 }
 
-fn onPlayerUnlinked() void {
+fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?*interop.MethodMetadata {
+    const type_def = tdb.findType(.fo(g.sdk), type_name) orelse return null;
+    const metadata = try g.interop_cache.getOrCacheMethodMetadata(.fo(g.sdk), type_def, method_sig);
+    return metadata;
+}
+
+fn onStart() !void {
+    // g.api.lockLua();
+    // defer g.api.unlockLua();
+    // try g.items.populateItemCategories();
+}
+
+fn onPlayerInitialized() !void {
+    g.api.lockLua();
+    defer g.api.unlockLua();
+
+    try new();
+}
+
+fn onNewSceneRequest() void {
     g.api.lockLua();
     defer g.api.unlockLua();
 
     g.items.reset();
     g.item_pickups.reset();
     g.level_flow_managed_objects.reset();
+    g.btree_management.reset();
 
     const player = &(g.player orelse return);
     player.deinit();
@@ -935,7 +1364,100 @@ fn installHooks() !void {
         false,
     );
 
-    _ = g.level_flow_manager.runtime.getMethod(.registerManagedObject).addHook(
+    // _ = g.level_flow_manager.runtime.getMethod(.registerManagedObject).addHook(
+    //     .fo(g.sdk.safe().functions),
+    //     struct {
+    //         fn func(args_opt: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
+    //             const args = args_opt orelse return .call_original;
+    //             if (args.len < 3) return .call_original;
+
+    //             const this_ptr = args[2] orelse return .call_original;
+    //             const this_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(this_ptr)) };
+    //             const this = LevelFlowManagedObject.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
+    //                 log.err("Error in LevelFlowManagedObject init: {}", .{e});
+    //                 return .call_original;
+    //             };
+
+    //             g.api.lockLua();
+    //             defer g.api.unlockLua();
+    //             g.level_flow_managed_objects.collect(this) catch {};
+
+    //             return .call_original;
+    //         }
+    //     }.func,
+    //     null,
+    //     false,
+    // );
+
+    // _ = g.level_flow_manager.runtime.getMethod(.registerController).addHook(
+    //     .fo(g.sdk.safe().functions),
+    //     struct {
+    //         fn func(args_opt: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
+    //             const args = args_opt orelse return .call_original;
+    //             if (args.len < 3) return .call_original;
+
+    //             const this_ptr = args[2] orelse return .call_original;
+    //             const this_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(this_ptr)) };
+    //             const this = LevelFlowController.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
+    //                 log.err("Error in LevelFlowController init: {}", .{e});
+    //                 return .call_original;
+    //             };
+
+    //             g.api.lockLua();
+    //             defer g.api.unlockLua();
+
+    //             var scope = g.interop_cache.newScope(g.allocator);
+    //             defer scope.deinit();
+
+    //             const behavior_tree = this.get(._FSM, &scope, .fo(g.sdk)) catch return .call_original;
+
+    //             const getRefMethodAddr = struct {
+    //                 fn func(managed: re.sdk.ManagedObject, name: [:0]const u8) !usize {
+    //                     // const type_def = managed.getTypeDefinition(.fo(g.sdk)) orelse return error.Invalid;
+    //                     // const method = type_def.findMethod(.fo(g.sdk), name) orelse return error.NotFound;
+    //                     // return @intFromPtr(method.getFunctionRaw(try .init(g.sdk.native)));
+    //                     // const type_info = type_def.getTypeInfo(try .init(g.sdk.native)) orelse return error.Invalid;
+    //                     const get_tree_ref_method = managed.getReflectionMethodDescriptor(try .init(g.sdk.native), name) orelse return error.NotFound;
+    //                     return @intFromPtr(get_tree_ref_method.raw);
+    //                     // return @intFromPtr(get_tree_ref_method.getFunction(try .init(g.sdk.native)));
+    //                 }
+    //             }.func;
+
+    //             const get_trees_ref_addr = getRefMethodAddr(behavior_tree, "get_Trees") catch |e| blk: {
+    //                 const val: usize = if (e == error.NotFound) 69 else 0;
+    //                 break :blk val;
+    //             };
+
+    //             // const trees_core = scope.callMethod(behavior_tree, "get_Tree", re.sdk.ManagedObject, .fo(g.sdk), .{}) catch return .call_original;
+    //             // const trees_core = scope.getReflectionProperty(behavior_tree, "Trees", re.sdk.ManagedObject, .fo(g.sdk)) catch return .call_original;
+    //             log.debug("LevelFlowController 0x{x} - FSM Tree: 0x{x} - get_Trees-addr: 0x{x}", .{
+    //                 @intFromPtr(this.managed.raw),
+    //                 @intFromPtr(behavior_tree.raw),
+    //                 get_trees_ref_addr,
+    //             });
+
+    //             return .call_original;
+    //         }
+    //     }.func,
+    //     null,
+    //     false,
+    // );
+
+    _ = g.level_flow_manager.runtime.getMethod(.updateProgressiveNumber).addHook(
+        .fo(g.sdk.safe().functions),
+        struct {
+            fn func(_: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
+                g.btree_management.performSingleAction() catch |e| {
+                    log.err("Failed to perform behavior tree action: {}", .{e});
+                };
+                return .call_original;
+            }
+        }.func,
+        null,
+        false,
+    );
+
+    _ = g.level_flow_manager.runtime.getMethod(.updateManagedObject).addHook(
         .fo(g.sdk.safe().functions),
         struct {
             fn func(args_opt: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
@@ -944,14 +1466,29 @@ fn installHooks() !void {
 
                 const this_ptr = args[2] orelse return .call_original;
                 const this_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(this_ptr)) };
-                const this = LevelFlowManagedObject.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
+                const this = managed_types.LevelFlowChangeRequest.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
                     log.err("Error in LevelFlowManagedObject init: {}", .{e});
                     return .call_original;
                 };
 
                 g.api.lockLua();
                 defer g.api.unlockLua();
-                g.level_flow_managed_objects.collect(this) catch {};
+
+                var scope = g.interop_cache.newScope(g.allocator);
+                defer scope.deinit();
+
+                const name_hash = this.call(.get_NameHash, &scope, .fo(g.sdk), .{}) catch return .call_original;
+                const change_number = this.call(.get_ChangeNumber, &scope, .fo(g.sdk), .{}) catch return .call_original;
+                const on_complete = this.get(.OnComplete, &scope, .fo(g.sdk)) catch return .call_original;
+                if (on_complete) |callback| {
+                    log.debug("LevelFlowChangeRequest: NameHash: {}, ChangeNumber: {}, Callback: 0x{x}", .{
+                        name_hash,
+                        change_number,
+                        @intFromPtr(callback.raw),
+                    });
+                } else {
+                    log.debug("LevelFlowChangeRequest: NameHash: {}, ChangeNumber: {}", .{ name_hash, change_number });
+                }
 
                 return .call_original;
             }
@@ -1081,17 +1618,39 @@ fn installHooks() !void {
         false,
     );
 
-    const PlayerContextT = try PlayerContext.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
-    _ = PlayerContextT.getMethod(.onUnlinked).addHook(
+    _ = g.scene_transition_manager.runtime.getMethod(.requestMainGameJumpCore).addHook(
         .fo(g.sdk.safe().functions),
         null,
         struct {
             fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
-                onPlayerUnlinked();
+                onNewSceneRequest();
             }
         }.func,
         false,
     );
+
+    _ = g.scene_transition_manager.runtime.getMethod(.requestTitleSceneJump).addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                onNewSceneRequest();
+            }
+        }.func,
+        false,
+    );
+
+    // const PlayerContextT = try PlayerContext.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
+    // _ = PlayerContextT.getMethod(.onUnlinked).addHook(
+    //     .fo(g.sdk.safe().functions),
+    //     null,
+    //     struct {
+    //         fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+    //             onPlayerUnlinked();
+    //         }
+    //     }.func,
+    //     false,
+    // );
 
     const onChangeObjectiveFn = (try tdbGetMethod(g.tdb, "app.AnalysisLogManagerAppBehavior", "onChangeObjective(app.ObjectiveChangeEventArg)")) orelse
         return error.OnChangeObjectiveMethodNotFound;

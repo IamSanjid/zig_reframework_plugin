@@ -6,8 +6,10 @@ pub const minimal = .{
     .functions = .all,
     .sdk = .{
         .functions = .{
-            .get_managed_singleton,
             .get_tdb,
+            .get_vm_context,
+            .get_managed_singleton,
+            .get_native_singleton,
             .add_hook,
             .remove_hook,
             .create_managed_string,
@@ -43,6 +45,7 @@ pub const minimal = .{
             .get_reflection_property_descriptor,
         },
         .reflection_property = .all,
+        .vm_context = .all,
     },
 };
 

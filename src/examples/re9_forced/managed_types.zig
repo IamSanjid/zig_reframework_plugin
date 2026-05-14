@@ -131,6 +131,58 @@ pub const CurrentObjectiveDetails = struct {
     }
 };
 
+pub const GameJumpData = struct {
+    level_id: LevelProgressID,
+    level_id_str: [:0]const u8,
+    is_override: bool,
+    jump_name: [:0]const u8,
+
+    pub fn copyFrom(
+        game_jump_data: LFBTA_FSM_GameJumpAction_GameJumpData,
+        arena: std.mem.Allocator,
+        scope: *interop.Scope,
+        sdk: interop.InteropSdk,
+    ) !GameJumpData {
+        const level_id = try game_jump_data.get(._LevelIDCache, scope, .fo(sdk));
+        const level_id_str = try game_jump_data.get(._LevelIDStr, scope, .fo(sdk));
+        const is_override = try game_jump_data.get(._IsOverride, scope, .fo(sdk));
+        const jump_name = try game_jump_data.get(._JumpName, scope, .fo(sdk));
+
+        const level_id_str_utf8 = if (level_id_str.data.len == 0)
+            try std.fmt.allocPrintSentinel(arena, "UnknownLevelIDStr_0x{x}", .{@intFromPtr(level_id.raw)}, 0)
+        else
+            try std.unicode.utf16LeToUtf8AllocZ(arena, level_id_str.data);
+
+        const jump_name_utf8 = if (jump_name.data.len == 0)
+            try std.fmt.allocPrintSentinel(arena, "UnknownJumpName_0x{x}", .{@intFromPtr(level_id.raw)}, 0)
+        else
+            try std.unicode.utf16LeToUtf8AllocZ(arena, jump_name.data);
+
+        return .{
+            .level_id = level_id,
+            .level_id_str = level_id_str_utf8,
+            .is_override = is_override,
+            .jump_name = jump_name_utf8,
+        };
+    }
+};
+
+pub const GameJumpFlowObject = struct {
+    owner_component: LevelFlowManagedObject,
+    name_hash: u32,
+    owner_name: [:0]const u8,
+    jump_datas: []GameJumpData,
+};
+
+pub const LevelFlowObject = struct {
+    component: LevelFlowManagedObject,
+    name_hash: u32,
+    data: ?struct {
+        owner_name: [:0]const u8,
+        action_names: [][:0]const u8,
+    } = null,
+};
+
 // Demostration on how to directly coerce to re-engine il2cpp objects and zig-land.
 
 pub const GenericDictionary = extern struct {
@@ -161,22 +213,16 @@ comptime {
     std.debug.assert(@offsetOf(ConcurrentCatalogDictionary, "_Dict") == 0x10);
 }
 
-pub const ItemManager = extern struct {
-    _obj_padding: [re.sdk.ManagedObject.runtime_size]u8 align(@alignOf(*anyopaque)),
-    _padding1: [0xe0]u8 align(@alignOf(*anyopaque)),
-    _ItemCatalog: *ConcurrentCatalogDictionary,
-};
-
-comptime {
-    std.debug.assert(@offsetOf(ItemManager, "_ItemCatalog") == 0xf0);
-}
-
 pub const SystemArray = interop.SystemArray;
 
 pub const SystemGuid = interop.ValueType;
 
 pub const ItemCategory = re.sdk.ManagedObject;
 pub const ItemId = re.sdk.ManagedObject;
+
+pub const ItemManager = interop.ManagedObjectTypeBuilder("app.ItemManager")
+    .Field(._ItemCatalog, *ConcurrentCatalogDictionary, null, null)
+    .Build();
 
 pub const InventoryPanelShapeSetting = interop.ManagedObjectTypeBuilder("app.InventoryPanelShapeSetting")
     .Field(._BaseShapeTypeCache, re.sdk.ManagedObject, null, null)
@@ -473,9 +519,40 @@ pub const InteractTriggerItemPickupEvent = interop.ManagedObjectTypeBuilder("app
 pub const LevelFlowManager = interop.ManagedObjectTypeBuilder("app.LevelFlowManager")
     .Method(.requestGameJump, void, null)
     .Method(.requestStartFlow, void, null)
+    .Method(.requestReset, void, null)
+    .Method(.requestStopFlow, void, null)
     .Method(.registerManagedObject, void, null)
     .Param("app.LevelFlowManagedObject", LevelFlowManagedObject, null)
+    .BuildMethod() // optional but it makes reading easier
+    .Method(.registerController, void, null)
+    .Param("app.LevelFlowController", LevelFlowController, null)
+    .BuildMethod()
+    .Method(.updateManagedObject, void, null)
+    .Param("app.LevelFlowChangeRequest", LevelFlowChangeRequest, null)
+    .BuildMethod()
+    .Method(.stopFlow, void, null)
+    .Param("System.UInt32", u32, null)
+    .BuildMethod()
+    .Method(.requestChangeProgressiveNumber, void, null)
+    .Param("System.UInt32", u32, null)
+    .Param("System.Int32", i32, null)
+    .BuildMethod()
+    .Method(.requestResetProgressiveNumber, void, null)
+    .Param("System.UInt32", u32, null)
+    .BuildMethod()
+    .Method(.requestStopProgressive, void, null)
+    .Param("System.UInt32", u32, null)
+    .BuildMethod()
+    .Method(.sendNext, bool, null)
+    .Param("System.UInt32", u32, null)
+    .Param("System.Action", ?re.sdk.ManagedObject, null)
+    .BuildMethod()
+    .Method(.getProgressiveNumber, i32, null)
+    .Param("System.UInt32", u32, null)
+    .BuildMethod()
+    .Method(.updateProgressiveNumber, void, null)
     .Field(._ManagedObjectList, *GenericDictionary, null, null)
+    .Field(._StartActiveList, re.sdk.ManagedObject, null, null)
     .Build();
 
 pub const LevelFlowManagedObject = interop.ManagedObjectTypeBuilder("app.LevelFlowManagedObject")
@@ -486,6 +563,21 @@ pub const LevelFlowManagedObject = interop.ManagedObjectTypeBuilder("app.LevelFl
     .Field(._LevelFlowEndType, LevelFlowEndType, null, null)
     .Field(._ExecutedSave, re.sdk.ManagedObject, null, null)
     .Field(._CollidersList, SystemArray, null, null)
+    .Build();
+
+pub const LevelFlowController = interop.ManagedObjectTypeBuilder("app.LevelFlowController")
+    .Method(.get_Enabled, bool, null)
+    .Field(._FSM, re.sdk.ManagedObject, null, null)
+    .Build();
+
+pub const LevelFlowChangeRequest = interop.ManagedObjectTypeBuilder("app.LevelFlowChangeRequest")
+    .Method(.get_ChangeNumber, i32, null)
+    .Method(.get_NameHash, u32, null)
+    .Method(.set_ChangeNumber, void, null)
+    .Param("System.Int32", i32, null)
+    .Method(.set_NameHash, void, null)
+    .Param("System.UInt32", u32, null)
+    .Field(.OnComplete, ?re.sdk.ManagedObject, null, null)
     .Build();
 
 pub const GameObject = interop.ManagedObjectTypeBuilder("via.GameObject")
@@ -505,8 +597,25 @@ pub const NameHash = interop.ManagedObjectTypeBuilder("app.NameHash")
 
 pub const LevelProgressID = re.sdk.ManagedObject;
 
+pub const BehaviorTree = interop.ManagedObjectTypeBuilder("via.behaviortree.BehaviorTree")
+    .Method(.getCurrentNodeName, interop.SystemStringView, null)
+    .Param("System.UInt32", u32, null)
+    .Method(.resetTree, void, null)
+    .Method(.restartTree, void, null)
+    .Method(.rebuildTree, void, null)
+    .Param("System.UInt32", u32, null)
+    .Build();
+
+pub const FSMTagArray = interop.ManagedObjectTypeBuilder("via.behaviortree.FSMTagArray")
+    .Method(.get_Tags, SystemArray, null)
+    .Build();
+
 pub const BT_ActionArg = interop.ManagedObjectTypeBuilder("via.behaviortree.ActionArg")
     .Method(.@".ctor", void, null)
+    .Method(.set_OwnerComponent, void, null)
+    .Param("via.Component", re.sdk.ManagedObject, null)
+    .Method(.set_OwnerGameObject, void, null)
+    .Param("via.GameObject", GameObject, null)
     .Build();
 
 pub const LFBTA_FSM_GameJumpAction_LevelFlowGameJumpActionParam = interop.ManagedObjectTypeBuilder("app.LevelFlowBehaviorTreeAction_FSM_GameJumpAction.LevelFlowGameJumpActionParam")
