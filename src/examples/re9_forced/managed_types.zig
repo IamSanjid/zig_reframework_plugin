@@ -94,6 +94,38 @@ pub const PanelItemDetails = struct {
     }
 };
 
+pub const FileDetails = struct {
+    file_id: FileID,
+    file_section_id: FileSectionID,
+    file_category: FileCategory,
+    title: [:0]const u8,
+
+    pub fn copyFrom(
+        file_details: FileDetailData,
+        arena: std.mem.Allocator,
+        scope: *interop.Scope,
+        sdk: interop.InteropSdk,
+    ) !FileDetails {
+        const file_id = try file_details.get(._FileID, scope, .fo(sdk));
+        const file_section_id = try file_details.get(._FileSectionID, scope, .fo(sdk));
+        const file_category = try file_details.get(._FileCategory, scope, .fo(sdk));
+
+        const title_id = try file_details.get(._Title, scope, .fo(sdk));
+
+        const title = if (title_id.len == 0)
+            try std.fmt.allocPrintSentinel(arena, "UnknownTitle_0x{x}", .{@intFromPtr(file_id.raw)}, 0)
+        else
+            try arena.dupeSentinel(u8, title_id, 0);
+
+        return FileDetails{
+            .file_id = file_id,
+            .file_section_id = file_section_id,
+            .file_category = file_category,
+            .title = title,
+        };
+    }
+};
+
 pub const CurrentObjectiveDetails = struct {
     id: ObjectiveID,
     parent_id: ObjectiveID,
@@ -340,6 +372,11 @@ pub const Inventory = interop.ManagedObjectTypeBuilder("app.Inventory")
     .Param("System.Boolean", bool, null)
     .Param("app.Inventory.AcquireItemOptions", InventoryAcquireItemOptions, null)
     .Param("app.ItemStockChangedEventType", ItemStockChangedEventType, null)
+    .MethodWithName("mergeOrAdd", .mergeOrAddWithItemAmountData, re.sdk.ManagedObject, null)
+    .Param("app.ItemAmountData", ItemId, null)
+    .Param("System.Boolean", bool, null)
+    .Param("app.Inventory.AcquireItemOptions", InventoryAcquireItemOptions, null)
+    .Param("app.ItemStockChangedEventType", ItemStockChangedEventType, null)
     .Method(.addPreferentialPanel, InventoryPanelKey, null)
     .Param("app.ItemID", ItemId, null)
     .Param("System.Int32", i32, null)
@@ -373,8 +410,50 @@ pub const InventoryManager = interop.ManagedObjectTypeBuilder("app.InventoryMana
     .Method(.execEvents, void, null)
     .Build();
 
+pub const FileID = re.sdk.ManagedObject;
+pub const FileSectionID = re.sdk.ManagedObject;
+
+pub const FileAcquireOptionBit = enum(c_int) {
+    none = 0,
+    skip_log,
+    pre_action,
+};
+
+pub const FileCategory = enum(c_int) {
+    invalid = 0,
+    file = 1,
+    cr = 2,
+    comms_log = 3,
+    audio_file = 4,
+};
+
+pub const FileManager = interop.ManagedObjectTypeBuilder("app.FileManager")
+    .Method(.getFileInventory, ?FileInventory, null)
+    .Param("app.FileInventoryUser", FileInventoryUser, null)
+    .Field(._FileCatalog, *ConcurrentCatalogDictionary, null, null)
+    .Build();
+
+pub const FileInventory = interop.ManagedObjectTypeBuilder("app.FileInventory")
+    .Method(.acquire, bool, null)
+    .Param("app.FileID", FileID, null)
+    .Param("app.FileAcquireOptionBit", FileAcquireOptionBit, null)
+    .Build();
+
+pub const FileInventoryUser = interop.ManagedObjectTypeBuilder("app.FileInventoryUser")
+    .Field(.Common, interop.ManagedObjectSelf, null, null)
+    .Field(.None, interop.ManagedObjectSelf, null, null)
+    .Build();
+
+pub const FileDetailData = interop.ManagedObjectTypeBuilder("app.FileDetailData")
+    .Field(._FileID, FileID, null, null)
+    .Field(._FileSectionID, FileSectionID, null, null)
+    .Field(._FileCategory, FileCategory, null, null)
+    .Field(._Title, [:0]const u8, messageSystemGuidToString, null)
+    .Build();
+
 pub const PlayerContext = interop.ManagedObjectTypeBuilder("app.PlayerContext")
     .Method(.get_InventoryUserID, InvenotryUser, null)
+    .Method(.get_FileInventoryUserID, FileInventoryUser, null)
     .Method(.onUnlinked, void, null)
     .Build();
 
@@ -501,6 +580,30 @@ pub const ItemCore = interop.ManagedObjectTypeBuilder("app.ItemCore")
     .Field(._ItemIDCache, ItemId, null, null)
     .Field(._ItemIDStr, interop.SystemStringView, null, null)
     .Build();
+
+pub fn getItemCoreItemID(
+    item_core: ItemCore,
+    scope: *interop.Scope,
+    sdk: re.api.VerifiedSdk(.{
+        .method = interop.Scope.method_specs,
+        .managed_object = interop.Scope.managed_object_specs,
+        .type_definition = .all,
+    }),
+) ?ItemId {
+    if (scope.callMethod(item_core.managed, "get_ItemID()", ItemId, .fo(sdk), .{})) |id| {
+        return id;
+    } else |err| {
+        scope.cache.appendDiagnostics("get_ItemID() error: {}", .{err}) catch {};
+    }
+
+    if (scope.callMethod(item_core.managed, "get__ItemID()", ItemId, .fo(sdk), .{})) |id| {
+        return id;
+    } else |err| {
+        scope.cache.appendDiagnostics("get__ItemID() error: {}", .{err}) catch {};
+    }
+
+    return null;
+}
 
 pub const InteractActionItemPickup = interop.ManagedObjectTypeBuilder("app.InteractActionItemPickup")
     .Method(.@".ctor", void, null)

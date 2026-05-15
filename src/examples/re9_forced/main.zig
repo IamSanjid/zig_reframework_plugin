@@ -13,23 +13,28 @@ const windows = std.os.windows;
 const interop = re.interop;
 
 const SystemArray = managed_types.SystemArray;
+const PlayerContext = managed_types.PlayerContext;
 const ItemDetails = managed_types.ItemDetails;
 const PanelItemDetails = managed_types.PanelItemDetails;
 const ItemDetailData = managed_types.ItemDetailData;
 const ItemCategory = managed_types.ItemCategory;
 const ItemId = managed_types.ItemId;
-const PlayerContext = managed_types.PlayerContext;
 const Inventory = managed_types.Inventory;
 const InventoryType = managed_types.InventoryType;
 const InventoryAcquireItemOptions = managed_types.InventoryAcquireItemOptions;
 const InventoryPanelKey = managed_types.InventoryPanelKey;
 const InventoryPanelItemInfo = managed_types.InventoryPanelItemInfo;
 const ItemStockChangedEventType = managed_types.ItemStockChangedEventType;
-const CurrentObjectiveDetails = managed_types.CurrentObjectiveDetails;
-const CurrentObjectiveInfo = managed_types.CurrentObjectiveInfo;
-const ObjectiveID = managed_types.ObjectiveID;
 const ItemCore = managed_types.ItemCore;
 const InteractActionItemPickup = managed_types.InteractActionItemPickup;
+const FileID = managed_types.FileID;
+const FileDetailData = managed_types.FileDetailData;
+const FileAcquireOptionBit = managed_types.FileAcquireOptionBit;
+const FileDetails = managed_types.FileDetails;
+const FileInventory = managed_types.FileInventory;
+const ObjectiveID = managed_types.ObjectiveID;
+const CurrentObjectiveDetails = managed_types.CurrentObjectiveDetails;
+const CurrentObjectiveInfo = managed_types.CurrentObjectiveInfo;
 const LevelFlowManagedObject = managed_types.LevelFlowManagedObject;
 const LevelFlowObject = managed_types.LevelFlowObject;
 const LevelFlowController = managed_types.LevelFlowController;
@@ -42,6 +47,7 @@ const GameJumpFlowObject = managed_types.GameJumpFlowObject;
 const GameJumpData = managed_types.GameJumpData;
 
 const ItemManager = managed_types.ItemManager;
+const FileManager = managed_types.FileManager;
 const CharacterManager = managed_types.CharacterManager;
 const InventoryManager = managed_types.InventoryManager;
 const ObjectiveManager = managed_types.ObjectiveManager;
@@ -79,7 +85,8 @@ pub const std_options: std.Options = .{
     .logFn = pluginLog,
 };
 
-const log = std.log.scoped(.re9_forced);
+pub const is_debug = @import("builtin").mode == .Debug;
+const log = std.log.scoped(if (is_debug) .re9_forced_debug else .re9_forced);
 
 const verified_sdk_spec = re.api.specs.extend(
     re.api.specs.minimal.sdk,
@@ -95,6 +102,7 @@ pub const g = struct {
     pub var tdb: re.sdk.Tdb = undefined;
 
     pub var item_manager: ItemManager = undefined;
+    pub var file_manager: FileManager = undefined;
     pub var character_manager: CharacterManager = undefined;
     pub var inventory_manager: InventoryManager = undefined;
     pub var objective_manager: ObjectiveManager = undefined;
@@ -103,6 +111,7 @@ pub const g = struct {
     pub var level_flow_manager: LevelFlowManager = undefined;
 
     pub var items: Items = undefined;
+    pub var files: Files = undefined;
     pub var level_flow_managed_objects: LevelFlowManagedObjects = undefined;
     pub var btree_management: BehaviorTreeManagement = undefined;
     pub var item_pickups: ItemPickups = undefined;
@@ -118,6 +127,7 @@ pub const g = struct {
 
         items = .{ .arena = .init(allocator) };
         item_pickups = .{ .arena = .init(allocator) };
+        files = .{ .arena = .init(allocator) };
         level_flow_managed_objects = .{ .arena = .init(allocator) };
         btree_management = .{ .arena = .init(allocator) };
 
@@ -126,6 +136,12 @@ pub const g = struct {
             .fo(g.sdk),
             re.sdk.getManagedSingleton(.fo(g.sdk), ItemManager.fullTypeName()) orelse
                 return error.ItemManagerNotFound,
+        );
+        file_manager = try FileManager.init(
+            &g.interop_cache,
+            .fo(g.sdk),
+            re.sdk.getManagedSingleton(.fo(g.sdk), FileManager.fullTypeName()) orelse
+                return error.FileManagerNotFound,
         );
         character_manager = try CharacterManager.init(
             &g.interop_cache,
@@ -328,10 +344,9 @@ pub const g = struct {
         }
     }
 
-    pub inline fn startBehaviorTreeNative(tree: *BehaviorTree) !void {
-        // var vm_context = re.sdk.getVmContext(.fo(g.sdk)) orelse return;
-        // tree.startBehavior(&vm_context);
-        tree.startBehavior(null);
+    pub inline fn startBehaviorTreeNative(tree: *BehaviorTree) void {
+        var vm_context = re.sdk.getVmContext(.fo(g.sdk)) orelse return;
+        tree.startBehavior(&vm_context);
     }
 };
 
@@ -388,12 +403,12 @@ pub const Items = struct {
                         ) catch |e| break :blk e;
                         const item_detail = self.scope.getField(kvp, "_Value", ItemDetailData, .fo(g.sdk)) catch |e| break :blk e;
                         const details = ItemDetails.copyFrom(item_detail, arena, self.scope, .fo(g.sdk)) catch |e| {
-                            log.err("Failed to copy: {}, context: {s}", .{ e, try g.interop_cache.ownDiagnostics() });
                             break :blk e;
                         };
                         break :blk details;
                     };
-                    const details = details_res catch {
+                    const details = details_res catch |e| {
+                        log.err("Failed to get details: {}, context: {s}", .{ e, try g.interop_cache.ownDiagnostics() });
                         self.owner.items_cache.removeByPtr(item_entry.key_ptr);
                         continue;
                     };
@@ -556,6 +571,53 @@ pub const Items = struct {
     }
 };
 
+pub const Files = struct {
+    files: std.ArrayList(FileDetails) = .empty,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn filesSlice(self: *const Files) []FileDetails {
+        return self.files.items;
+    }
+
+    pub fn repopulate(self: *Files) !void {
+        self.reset();
+
+        const arena = self.arena.allocator();
+        var scope = g.interop_cache.newScope(arena);
+        defer scope.deinit();
+
+        const file_catalog = try g.file_manager.get(._FileCatalog, &scope, .fo(g.sdk));
+        const dict: *GenericDictionary = file_catalog._Dict;
+        const entries = interop.SystemArrayEntries.unsafe(dict._entries, .fo(g.sdk));
+        if (entries.contained_type_def.getVmObjType(.fo(g.sdk)) != .valtype) {
+            return error.UnexpectedContainedType;
+        }
+
+        const element_size = entries.contained_type_def.getValueTypeSize(.fo(g.sdk));
+
+        for (0..entries.len) |idx| {
+            const entry_ptr_usize = @intFromPtr(entries.ptr) + (idx * element_size);
+            const kvp = scope.getFieldFromTypeDef(
+                @ptrFromInt(entry_ptr_usize),
+                entries.contained_type_def,
+                "value",
+                re.sdk.ManagedObject,
+                null,
+                false,
+                .fo(g.sdk),
+            ) catch continue;
+            const value = scope.getField(kvp, "_Value", FileDetailData, .fo(g.sdk)) catch continue;
+            const details = FileDetails.copyFrom(value, arena, &scope, .fo(g.sdk)) catch continue;
+            try self.files.append(arena, details);
+        }
+    }
+
+    pub fn reset(self: *Files) void {
+        _ = self.arena.reset(.retain_capacity);
+        self.files = .empty;
+    }
+};
+
 pub const ItemPickups = struct {
     collection: std.ArrayList(InteractActionItemPickup) = .empty,
     map: std.AutoHashMapUnmanaged(ItemId, std.ArrayList(struct {
@@ -596,11 +658,33 @@ pub const ItemPickups = struct {
         var scope = g.interop_cache.newScope(g.allocator);
         defer scope.deinit();
 
+        const item_catalog = try g.item_manager.get(._ItemCatalog, &scope, .fo(g.sdk));
+        const item_catalog_mo = re.sdk.ManagedObject{ .raw = @ptrCast(item_catalog) };
+
         const arena = self.arena.allocator();
         for (self.collection.items) |pickup| {
             const item_core = pickup.get(._ItemCore, &scope, .fo(g.sdk)) catch continue;
-            const id = item_core.get(._ItemIDCache, &scope, .fo(g.sdk)) catch continue;
+            const id = managed_types.getItemCoreItemID(item_core, &scope, .fo(g.sdk)) orelse {
+                log.warn("Failed to get item-core item-id {s}", .{scope.cache.ownDiagnostics() catch ""});
+                continue;
+            };
 
+            const result = try scope.callMethod(
+                item_catalog_mo,
+                "containsKey(app.ItemID)",
+                bool,
+                .fo(g.sdk),
+                .{id},
+            );
+            if (!result) {
+                log.warn(
+                    "item not found in item catalog: id=0x{x}, core=0x{x}",
+                    .{ @intFromPtr(id.raw), @intFromPtr(item_core.managed.raw) },
+                );
+                continue;
+            }
+
+            errdefer log.err("id=0x{x}", .{@intFromPtr(id.raw)});
             const detail = g.items.items_cache.get(id) orelse return error.ItemDetailsNotFound;
 
             const entry = try self.map.getOrPutValue(arena, id, .empty);
@@ -616,17 +700,6 @@ pub const ItemPickups = struct {
         self.map = .empty;
     }
 };
-
-fn Arena(comptime scope: @EnumLiteral()) *std.heap.ArenaAllocator {
-    const ArenaCache = struct {
-        pub const _scope = @tagName(scope);
-        var arena: ?std.heap.ArenaAllocator = undefined;
-    };
-    if (ArenaCache.arena == null) {
-        ArenaCache.arena = .init(g.allocator);
-    }
-    return &ArenaCache.arena.?;
-}
 
 pub const InvenotryManagement = struct {
     items: std.ArrayList(PanelItemDetails) = .empty,
@@ -736,6 +809,25 @@ pub const InvenotryManagement = struct {
         return res;
     }
 
+    pub inline fn mergeOrAddWithItemAmountData(
+        self: InvenotryManagement,
+        scope: *interop.Scope,
+        amount_data: re.sdk.ManagedObject,
+        force: bool,
+        acquire_options: InventoryAcquireItemOptions,
+        event_type: ItemStockChangedEventType,
+    ) !re.sdk.ManagedObject {
+        const inventory = self.inventory orelse return error.InventoryNotSet;
+        const res = try inventory.call(
+            .mergeOrAddWithItemAmountData,
+            scope,
+            .fo(g.sdk),
+            .{ amount_data, force, acquire_options, event_type },
+        );
+        try g.character_manager.call(.updateInveontoryForPlayer, scope, .fo(g.sdk), .{});
+        return res;
+    }
+
     pub inline fn addPreferentialPanel(
         self: InvenotryManagement,
         scope: *interop.Scope,
@@ -763,6 +855,25 @@ pub const InvenotryManagement = struct {
             .{panel_key},
         );
         return res;
+    }
+};
+
+pub const FileInventoryManagement = struct {
+    inventory: ?FileInventory = null,
+
+    pub fn acquire(
+        self: *const FileInventoryManagement,
+        scope: *interop.Scope,
+        file_id: FileID,
+        acquire_option: FileAcquireOptionBit,
+    ) !bool {
+        const inventory = self.inventory orelse return error.InventoryNotSet;
+        return inventory.call(
+            .acquire,
+            scope,
+            .fo(g.sdk),
+            .{ file_id, acquire_option },
+        );
     }
 };
 
@@ -817,10 +928,12 @@ pub const BehaviorTreeManagement = struct {
     pub const ActionTag = enum {
         start,
         start_native,
+        remove_native,
     };
     pub const Action = union(ActionTag) {
         start: *BehaviorTree,
         start_native: *BehaviorTree,
+        remove_native: *BehaviorTree,
 
         fn fromTag(tag: ActionTag, payload: anytype) Action {
             // TODO: Update this when more action types are added..
@@ -828,6 +941,7 @@ pub const BehaviorTreeManagement = struct {
             return switch (tag) {
                 .start => .{ .start = payload },
                 .start_native => .{ .start_native = payload },
+                .remove_native => .{ .remove_native = payload },
             };
         }
     };
@@ -878,6 +992,7 @@ pub const BehaviorTreeManagement = struct {
             try switch (action) {
                 .start => |tree| g.startBehaviorTree(tree),
                 .start_native => |tree| g.startBehaviorTreeNative(tree),
+                .remove_native => |tree| tree.removeFromExecutionQueue(),
             };
         }
     }
@@ -1051,8 +1166,20 @@ pub const Player = struct {
     scope: interop.Scope,
     hand_inventory: InvenotryManagement = .{},
     item_box_inventory: InvenotryManagement = .{},
+    file_mg: FileInventoryManagement = .{},
     objective_mg: ObjectiveManagement = .{},
     game_jump_actions: std.ArrayList(GameJumpFlowObject) = .empty,
+
+    fn Arena(comptime scope: @EnumLiteral()) *std.heap.ArenaAllocator {
+        const ArenaCache = struct {
+            pub const _scope = @tagName(scope);
+            var arena: ?std.heap.ArenaAllocator = undefined;
+        };
+        if (ArenaCache.arena == null) {
+            ArenaCache.arena = .init(g.allocator);
+        }
+        return &ArenaCache.arena.?;
+    }
 
     fn init() !Player {
         var scope = g.interop_cache.newScope(g.allocator);
@@ -1082,6 +1209,7 @@ pub const Player = struct {
             )) orelse return error.HandInventoryNotFound;
             log.debug("Hand Inventory: 0x{x}", .{@intFromPtr(inventory.managed.raw)});
             try self.hand_inventory.update(arena.allocator(), inventory, &self.scope);
+            log.info("Hand Inventory Found {} items.", .{self.hand_inventory.itemsSlice().len});
         }
 
         {
@@ -1093,7 +1221,21 @@ pub const Player = struct {
             )) orelse return error.ItemBoxInventoryNotFound;
             log.debug("Item Box Inventory: 0x{x}", .{@intFromPtr(inventory.managed.raw)});
             try self.item_box_inventory.update(arena.allocator(), inventory, &self.scope);
+            log.info("Item Box Inventory Found {} items.", .{self.item_box_inventory.itemsSlice().len});
         }
+    }
+
+    pub fn checkFileInventory(self: *Player) !void {
+        defer self.scope.reset();
+        const file_inventory_user = try self.player_context.call(.get_FileInventoryUserID, &self.scope, .fo(g.sdk), .{});
+        const file_inventory = try g.file_manager.call(
+            .getFileInventory,
+            &self.scope,
+            .fo(g.sdk),
+            .{file_inventory_user},
+        ) orelse return error.FileInventoryNotFound;
+        log.debug("FileInventory: 0x{x}", .{@intFromPtr(file_inventory.managed.raw)});
+        self.file_mg.inventory = file_inventory;
     }
 
     pub fn checkObjectives(self: *Player) !void {
@@ -1166,21 +1308,25 @@ pub const Player = struct {
     }
 };
 
+// mainly map/populate collections which changes per-level wise here
 pub fn new() !void {
-    try g.interop_cache.resetDiagnostics();
+    g.interop_cache.resetDiagnostics();
+    defer g.interop_cache.resetDiagnostics();
 
-    try g.items.repopulate();
+    // we first need to make sure the player is initialized, this will ensure that per-level collections are set
+    g.player = try .init();
 
-    log.debug("Collected item-pickups: {}", .{g.item_pickups.collection.items.len});
+    log.info("Collected item-pickups: {}", .{g.item_pickups.collection.items.len});
     try g.item_pickups.mapPickupsWithItemId();
 
+    log.debug("Updating level flow managed objects...", .{});
     try g.level_flow_managed_objects.update();
-    log.debug("Collected level flow managed objects: {}", .{g.level_flow_managed_objects.collection.items.len});
+    log.info("Collected level flow managed objects: {}", .{g.level_flow_managed_objects.collection.items.len});
     const LevelFlowGameJumpActionParamT = try managed_types.LFBTA_FSM_GameJumpAction_LevelFlowGameJumpActionParam
         .Runtime
         .get(&g.interop_cache, .fo(g.sdk));
     const flows = try g.level_flow_managed_objects.getWithChildComponentType(LevelFlowGameJumpActionParamT.metadata.type_def);
-    log.debug("Found game flows: {}", .{flows.len});
+    log.info("Found game flows: {}", .{flows.len});
     {
         var scope = g.interop_cache.newScope(g.allocator);
         defer scope.deinit();
@@ -1227,20 +1373,12 @@ pub fn new() !void {
                     @intFromPtr(child),
                     type_name,
                 });
-
-                const btree = BehaviorTreeManaged.init(&g.interop_cache, .fo(g.sdk), child_mo) catch continue;
-                const flow_node_name_sys_str = btree.call(.getCurrentNodeName, &scope, .fo(g.sdk), .{0}) catch |e| {
-                    log.err("Error getting current node name: {}, context: {s}", .{ e, try g.interop_cache.ownDiagnostics() });
-                    continue;
-                };
-                const flow_node_name = try std.unicode.utf16LeToUtf8Alloc(scope.arena.allocator(), flow_node_name_sys_str.data);
-                log.debug("    Current Node Name: {s}", .{flow_node_name});
             }
         }
     }
 
-    g.player = try .init();
     try g.player.?.checkInventory();
+    try g.player.?.checkFileInventory();
     try g.player.?.checkObjectives();
     try g.player.?.checkGameJumps(flows);
 }
@@ -1251,15 +1389,25 @@ fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime meth
     return metadata;
 }
 
+// we populate the lists/maps when we need to collect them from a singleton
 fn onStart() !void {
-    // g.api.lockLua();
-    // defer g.api.unlockLua();
-    // try g.items.populateItemCategories();
+    g.api.lockLua();
+    defer g.api.unlockLua();
+
+    log.debug("Repopulating items...", .{});
+    try g.items.repopulate();
+    log.info("Collected items: {}", .{g.items.items_cache.count()});
+
+    log.debug("Repopulating files...", .{});
+    try g.files.repopulate();
+    log.info("Collected files: {}", .{g.files.filesSlice().len});
 }
 
 fn onPlayerInitialized() !void {
     g.api.lockLua();
     defer g.api.unlockLua();
+
+    log.debug("Player Initialized new...", .{});
 
     try new();
 }
@@ -1268,10 +1416,15 @@ fn onNewSceneRequest() void {
     g.api.lockLua();
     defer g.api.unlockLua();
 
+    log.debug("NewScene Requested resetting...", .{});
+
     g.items.reset();
     g.item_pickups.reset();
+    g.files.reset();
     g.level_flow_managed_objects.reset();
     g.btree_management.reset();
+
+    ui.reset();
 
     const player = &(g.player orelse return);
     player.deinit();
@@ -1364,85 +1517,9 @@ fn installHooks() !void {
         false,
     );
 
-    // _ = g.level_flow_manager.runtime.getMethod(.registerManagedObject).addHook(
-    //     .fo(g.sdk.safe().functions),
-    //     struct {
-    //         fn func(args_opt: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
-    //             const args = args_opt orelse return .call_original;
-    //             if (args.len < 3) return .call_original;
-
-    //             const this_ptr = args[2] orelse return .call_original;
-    //             const this_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(this_ptr)) };
-    //             const this = LevelFlowManagedObject.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
-    //                 log.err("Error in LevelFlowManagedObject init: {}", .{e});
-    //                 return .call_original;
-    //             };
-
-    //             g.api.lockLua();
-    //             defer g.api.unlockLua();
-    //             g.level_flow_managed_objects.collect(this) catch {};
-
-    //             return .call_original;
-    //         }
-    //     }.func,
-    //     null,
-    //     false,
-    // );
-
-    // _ = g.level_flow_manager.runtime.getMethod(.registerController).addHook(
-    //     .fo(g.sdk.safe().functions),
-    //     struct {
-    //         fn func(args_opt: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
-    //             const args = args_opt orelse return .call_original;
-    //             if (args.len < 3) return .call_original;
-
-    //             const this_ptr = args[2] orelse return .call_original;
-    //             const this_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(this_ptr)) };
-    //             const this = LevelFlowController.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
-    //                 log.err("Error in LevelFlowController init: {}", .{e});
-    //                 return .call_original;
-    //             };
-
-    //             g.api.lockLua();
-    //             defer g.api.unlockLua();
-
-    //             var scope = g.interop_cache.newScope(g.allocator);
-    //             defer scope.deinit();
-
-    //             const behavior_tree = this.get(._FSM, &scope, .fo(g.sdk)) catch return .call_original;
-
-    //             const getRefMethodAddr = struct {
-    //                 fn func(managed: re.sdk.ManagedObject, name: [:0]const u8) !usize {
-    //                     // const type_def = managed.getTypeDefinition(.fo(g.sdk)) orelse return error.Invalid;
-    //                     // const method = type_def.findMethod(.fo(g.sdk), name) orelse return error.NotFound;
-    //                     // return @intFromPtr(method.getFunctionRaw(try .init(g.sdk.native)));
-    //                     // const type_info = type_def.getTypeInfo(try .init(g.sdk.native)) orelse return error.Invalid;
-    //                     const get_tree_ref_method = managed.getReflectionMethodDescriptor(try .init(g.sdk.native), name) orelse return error.NotFound;
-    //                     return @intFromPtr(get_tree_ref_method.raw);
-    //                     // return @intFromPtr(get_tree_ref_method.getFunction(try .init(g.sdk.native)));
-    //                 }
-    //             }.func;
-
-    //             const get_trees_ref_addr = getRefMethodAddr(behavior_tree, "get_Trees") catch |e| blk: {
-    //                 const val: usize = if (e == error.NotFound) 69 else 0;
-    //                 break :blk val;
-    //             };
-
-    //             // const trees_core = scope.callMethod(behavior_tree, "get_Tree", re.sdk.ManagedObject, .fo(g.sdk), .{}) catch return .call_original;
-    //             // const trees_core = scope.getReflectionProperty(behavior_tree, "Trees", re.sdk.ManagedObject, .fo(g.sdk)) catch return .call_original;
-    //             log.debug("LevelFlowController 0x{x} - FSM Tree: 0x{x} - get_Trees-addr: 0x{x}", .{
-    //                 @intFromPtr(this.managed.raw),
-    //                 @intFromPtr(behavior_tree.raw),
-    //                 get_trees_ref_addr,
-    //             });
-
-    //             return .call_original;
-    //         }
-    //     }.func,
-    //     null,
-    //     false,
-    // );
-
+    // The BehaviorTree dispatcher, dispatches in multiple threaded manner, we need to start/queue/remove BehaviorTree actions in the hook because
+    // the function `updateProgressiveNumber` gets called after or before each dispatch frame, so we will be on the same thread as the dispatcher.
+    // Pre Application entry hook on `UpdateBehavior` function might also work, just didn't test it.
     _ = g.level_flow_manager.runtime.getMethod(.updateProgressiveNumber).addHook(
         .fo(g.sdk.safe().functions),
         struct {
@@ -1497,40 +1574,42 @@ fn installHooks() !void {
         false,
     );
 
-    const LFBTA_FSM_GameJumpActionT = try LFBTA_FSM_GameJumpAction.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
-    _ = LFBTA_FSM_GameJumpActionT.getMethod(.@".ctor").addHook(
-        .fo(g.sdk.safe().functions),
-        struct {
-            fn func(args_opt: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
-                const args = args_opt orelse return .call_original;
-                if (args.len < 2) return .call_original;
-                const this_ptr = args[1] orelse return .call_original;
-                const this_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(this_ptr)) };
-                const this = LFBTA_FSM_GameJumpAction.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
-                    if (e == error.TypeDefMismatch) return .call_original;
-                    log.err("Error in LFBTA_FSM_GameJumpAction init: {}", .{e});
+    if (is_debug) {
+        const LFBTA_FSM_GameJumpActionT = try LFBTA_FSM_GameJumpAction.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
+        _ = LFBTA_FSM_GameJumpActionT.getMethod(.@".ctor").addHook(
+            .fo(g.sdk.safe().functions),
+            struct {
+                fn func(args_opt: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
+                    const args = args_opt orelse return .call_original;
+                    if (args.len < 2) return .call_original;
+                    const this_ptr = args[1] orelse return .call_original;
+                    const this_mo: re.sdk.ManagedObject = .{ .raw = @ptrCast(@alignCast(this_ptr)) };
+                    const this = LFBTA_FSM_GameJumpAction.init(&g.interop_cache, .fo(g.sdk), this_mo) catch |e| {
+                        if (e == error.TypeDefMismatch) return .call_original;
+                        log.err("Error in LFBTA_FSM_GameJumpAction init: {}", .{e});
+                        return .call_original;
+                    };
+
+                    g.api.lockLua();
+                    defer g.api.unlockLua();
+
+                    //const arena = g.game_jumps.arena.allocator();
+
+                    const type_def = this.managed.getTypeDefinition(.fo(g.sdk)) orelse return .call_original;
+                    const type_name = type_def.getFullNameAlloc(.fo(g.sdk), g.allocator) catch return .call_original;
+                    defer g.allocator.free(type_name);
+
+                    log.debug("GameJump({s}) .ctor: 0x{x}", .{ type_name, @intFromPtr(this.managed.raw) });
+
+                    //g.game_jumps.collect(this) catch {};
+
                     return .call_original;
-                };
-
-                g.api.lockLua();
-                defer g.api.unlockLua();
-
-                //const arena = g.game_jumps.arena.allocator();
-
-                const type_def = this.managed.getTypeDefinition(.fo(g.sdk)) orelse return .call_original;
-                const type_name = type_def.getFullNameAlloc(.fo(g.sdk), g.allocator) catch return .call_original;
-                defer g.allocator.free(type_name);
-
-                log.debug("GameJump({s}) .ctor: 0x{x}", .{ type_name, @intFromPtr(this.managed.raw) });
-
-                //g.game_jumps.collect(this) catch {};
-
-                return .call_original;
-            }
-        }.func,
-        null,
-        false,
-    );
+                }
+            }.func,
+            null,
+            false,
+        );
+    }
 
     // app.Inventory.addPanel(app.ItemAmountData, via.Int2, app.InventoryPanelRotateType, app.ItemStockChangedEventType)
     const addPanelFn = (try tdbGetMethod(g.tdb, "app.Inventory", "addPanel(app.ItemAmountData, via.Int2, app.InventoryPanelRotateType, app.ItemStockChangedEventType)")) orelse
@@ -1606,12 +1685,10 @@ fn installHooks() !void {
         struct {
             fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
                 onPlayerInitialized() catch |e| {
-                    if (g.interop_cache.ownDiagnostics()) |diags| {
-                        if (diags.len > 0) {
-                            log.err("Cache context: {s}", .{diags});
-                        }
-                    } else |_| {}
-                    log.err("Error notifyPlayerInitialized: {}", .{e});
+                    log.err(
+                        "Error notifyPlayerInitialized: {}, context: {s}",
+                        .{ e, g.interop_cache.ownDiagnostics() catch "none" },
+                    );
                 };
             }
         }.func,
@@ -1704,7 +1781,10 @@ comptime {
         .onImGuiDrawUI = struct {
             fn func(data: *re.API_C.REFImGuiFrameCbData) void {
                 ui.draw(data) catch |e| {
-                    log.err("Error in UI draw: {}", .{e});
+                    log.err(
+                        "Error in UI draw: {}, context: {s}",
+                        .{ e, g.interop_cache.ownDiagnostics() catch "none" },
+                    );
                 };
             }
         }.func,

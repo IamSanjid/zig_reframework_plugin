@@ -55,6 +55,8 @@ pub var igBeginTabItem: *const fn (label: [*c]const u8, p_open: [*c]bool, flags:
 pub var igEndTabItem: *const fn () callconv(.c) void = undefined;
 pub var igTabItemButton: *const fn (label: [*c]const u8, flags: cimgui.ImGuiTabItemFlags) callconv(.c) bool = undefined;
 pub var igSetTabItemClosed: *const fn (tab_or_docked_window_label: [*c]const u8) callconv(.c) void = undefined;
+pub var igGetCurrentTabBar: *const fn () callconv(.c) [*c]cimgui.ImGuiTabBar = undefined;
+pub var igTabBarFindTabByOrder: *const fn (tab_bar: [*c]cimgui.ImGuiTabBar, tab_name: [*c]const u8) callconv(.c) [*c]cimgui.ImGuiTabItem = undefined;
 pub var igPushID_Str: *const fn (str_id: [*c]const u8) callconv(.c) void = undefined;
 pub var igPushID_Int: *const fn (int_id: c_int) callconv(.c) void = undefined;
 pub var igPopID: *const fn () callconv(.c) void = undefined;
@@ -158,6 +160,10 @@ pub fn init() !void {
         return error.igTabItemButtonNotFound);
     igSetTabItemClosed = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igSetTabItemClosed") orelse
         return error.igSetTabItemClosedNotFound);
+    igGetCurrentTabBar = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igGetCurrentTabBar") orelse
+        return error.igGetCurrentTabBarNotFound);
+    igTabBarFindTabByOrder = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igTabBarFindTabByOrder") orelse
+        return error.igTabBarFindTabByOrderNotFound);
     igPushID_Str = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igPushID_Str") orelse
         return error.igPushID_StrNotFound);
     igPushID_Int = @ptrCast(win32.system.library_loader.GetProcAddress(cimgui_dll_module, "igPushID_Int") orelse

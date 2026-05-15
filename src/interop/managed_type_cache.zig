@@ -68,8 +68,8 @@ pub const ManagedTypeCache = struct {
         return self.diagnostics.toOwnedSliceSentinel(self.diagnostics_arena.allocator(), 0);
     }
 
-    pub fn resetDiagnostics(self: *Self) !void {
-        try self.mutex.lock(self.io);
+    pub fn resetDiagnostics(self: *Self) void {
+        self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
         self.diagnostics = .empty;

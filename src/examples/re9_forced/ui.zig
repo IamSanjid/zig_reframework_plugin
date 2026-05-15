@@ -8,14 +8,19 @@ const cimgui_dll = @import("cimgui_dll.zig");
 
 const managed_types = @import("managed_types.zig");
 
+const level_flows = @import("ui/level_flows.zig");
+const behaviortree_edits = @import("ui/behaviortree_edits.zig");
+
 const interop = re.interop;
+
+const BehaviorTree = @import("behavior_tree.zig").BehaviorTree;
 
 const g = root.g;
 
 const log = std.log.scoped(.re9_forced_ui);
 
-const color_active = 0xfff4853d;
-const color_warning: cimgui.ImVec4 = .{ .x = 1.0, .y = 1.0, .z = 0.0, .w = 1.0 };
+pub const color_active = 0xfff4853d;
+pub const color_warning: cimgui.ImVec4 = .{ .x = 1.0, .y = 1.0, .z = 0.0, .w = 1.0 };
 
 // to match field names, keep tags in PascalCase
 const ItemStockChangedEventTypeTag = enum {
@@ -32,48 +37,39 @@ const ItemStockChangedEventTypeTag = enum {
     CarryOver,
 };
 
-const ItemLoadingTypeTag = enum {
-    Auto,
-    None,
-    TypeA,
-    TypeB,
-};
-
 const InventoryType = enum {
     Hand,
     ItemBox,
 };
 
-const u = struct {
-    var show_window: bool = true;
+pub const u = struct {
+    pub var show_window: bool = true;
 
-    var remove_item_event_type: ItemStockChangedEventTypeTag = .Default;
-    // var add_loading_type: ItemLoadingTypeTag = .Auto;
-    var add_item_acquire_options: managed_types.InventoryAcquireItemOptions = .default;
-    var add_item_event_type: ItemStockChangedEventTypeTag = .Default;
+    pub var remove_item_event_type: ItemStockChangedEventTypeTag = .Default;
+    // pub var add_item_loading_type: managed_types.ItemLoadingType = .type_a;
+    pub var add_item_acquire_options: managed_types.InventoryAcquireItemOptions = .default;
+    pub var add_item_event_type: ItemStockChangedEventTypeTag = .Default;
 
     // Items Catalog configs
-    var item_catalog_fliter_category: ?managed_types.ItemCategory = null;
-    var show_unknown_items: bool = false;
-    var add_to_inventory: InventoryType = .Hand;
+    pub var item_catalog_fliter_category: ?managed_types.ItemCategory = null;
+    pub var show_unknown_items: bool = false;
+    pub var add_to_inventory: InventoryType = .Hand;
+
+    // File Catalog configs
+    pub var file_acquire_option: managed_types.FileAcquireOptionBit = .none;
 
     // Save configs
-    var manual_save_slot_selection_method: managed_types.SaveSlotSelectionMethod = .empty_or_oldest;
+    pub var manual_save_slot_selection_method: managed_types.SaveSlotSelectionMethod = .empty_or_oldest;
 
-    // level flow configs
-    var flow_progressive_number: i32 = 0;
-    var owner_name_search_buf: [512:0]u8 = undefined;
-    var action_type_search_buf: [512:0]u8 = undefined;
-    var owner_name_search: ?[]const u8 = null;
-    var action_type_search: ?[]const u8 = null;
-    var read_flow_progressive_number: ?i32 = null;
-    var filter_name_hash: u32 = 0;
-    var filter_name_hash_count: i32 = 0;
+    pub var focus_btree_edits: bool = false;
 
-    var scope: interop.Scope = undefined;
+    pub var arena: std.heap.ArenaAllocator = undefined;
+    pub var scope: interop.Scope = undefined;
 
     fn init() !void {
+        arena = .init(g.allocator);
         scope = g.interop_cache.newScope(g.allocator);
+        behaviortree_edits.reset();
     }
 };
 
@@ -104,7 +100,7 @@ inline fn getInventory(from: InventoryType) *const root.InvenotryManagement {
 }
 
 // its safe because only one thread should be callin the draw function
-var label_buf: [128]u8 = undefined;
+pub var label_buf: [128]u8 = undefined;
 
 fn drawInventory(str_id: [*c]const u8, inv: *const root.InvenotryManagement) !void {
     const items = inv.itemsSlice();
@@ -153,8 +149,8 @@ fn drawInventory(str_id: [*c]const u8, inv: *const root.InvenotryManagement) !vo
         const remove_btn_label = try std.fmt.bufPrintSentinel(&label_buf, "Remove##0x{x}-{}", .{ @intFromPtr(item.key.raw), i }, 0);
         if (cimgui_dll.igButton(remove_btn_label, .{})) {
             const evt = try getItemStockChangedEventType(u.remove_item_event_type, &u.scope);
-            _ = try inv.consumeStock(&u.scope, item.key, item.stock, evt);
-            // _ = try inv.removePanel(&u.scope, item.key, evt);
+            // _ = try inv.consumeStock(&u.scope, item.key, item.stock, evt);
+            _ = try inv.removePanel(&u.scope, item.key, evt);
             return; // important to return because old items slice is now invalid after mutation
         }
         if (cimgui_dll.igIsItemHovered(0)) {
@@ -199,13 +195,18 @@ fn drawPlayerInventory() !void {
 }
 
 fn drawPickups() !void {
-    cimgui_dll.igSameLine(0, -1.0);
-
-    if (!cimgui_dll.igBeginTable("##item_catalog_table", 4, cimgui.ImGuiTableFlags_Borders | cimgui.ImGuiTableFlags_Resizable, .{}, 0.0)) {
+    if (!cimgui_dll.igBeginTable(
+        "##pickups_table",
+        5,
+        cimgui.ImGuiTableFlags_Borders | cimgui.ImGuiTableFlags_Resizable,
+        .{},
+        0.0,
+    )) {
         return;
     }
     defer cimgui_dll.igEndTable();
 
+    cimgui_dll.igTableSetupColumn("Pickups", cimgui.ImGuiTableColumnFlags_WidthStretch, 30.0, 0);
     cimgui_dll.igTableSetupColumn("Name", cimgui.ImGuiTableColumnFlags_WidthStretch, 50.0, 0);
     cimgui_dll.igTableSetupColumn("Description", cimgui.ImGuiTableColumnFlags_WidthStretch, 100.0, 0);
     cimgui_dll.igTableSetupColumn("Category", cimgui.ImGuiTableColumnFlags_WidthStretch, 50.0, 0);
@@ -217,49 +218,52 @@ fn drawPickups() !void {
 
     var iter = g.item_pickups.map.valueIterator();
     while (iter.next()) |pickups| {
-        for (pickups.items) |pickup_detail| {
-            defer items_local_id += 1;
-            const item = pickup_detail.detail;
+        const pickup_detail = pickups.getLast() orelse continue;
 
-            cimgui_dll.igTableNextRow(0, 0.0);
+        defer items_local_id += 1;
+        const item = pickup_detail.detail;
 
-            _ = cimgui_dll.igTableNextColumn();
-            cimgui_dll.igText(item.name);
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip(
-                    "ID: 0x%x\nBase Item Box Capacity: %d\nBase Capacity: %d",
-                    @intFromPtr(item.id.raw),
-                    item.base_item_box_capacity,
-                    item.base_capacity,
-                );
-            }
+        cimgui_dll.igTableNextRow(0, 0.0);
 
-            _ = cimgui_dll.igTableNextColumn();
-            cimgui_dll.igText(item.caption);
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip(
-                    "ID: 0x%x\nBase Item Box Capacity: %d\nBase Capacity: %d",
-                    @intFromPtr(item.id.raw),
-                    item.base_item_box_capacity,
-                    item.base_capacity,
-                );
-            }
+        _ = cimgui_dll.igTableNextColumn();
+        cimgui_dll.igText("x%lu", pickups.items.len);
 
-            _ = cimgui_dll.igTableNextColumn();
-            const category_name = g.items.categories.get(item.category) orelse "Unknown";
-            cimgui_dll.igText(category_name);
-
-            _ = cimgui_dll.igTableNextColumn();
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Pickup##0x{x}-{}",
-                .{ @intFromPtr(item.id.raw), items_local_id },
-                0,
+        _ = cimgui_dll.igTableNextColumn();
+        cimgui_dll.igText(item.name);
+        if (cimgui_dll.igIsItemHovered(0)) {
+            cimgui_dll.igSetTooltip(
+                "ID: 0x%x\nBase Item Box Capacity: %d\nBase Capacity: %d",
+                @intFromPtr(item.id.raw),
+                item.base_item_box_capacity,
+                item.base_capacity,
             );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                try g.performPickup(item.id);
-                return; // new-frame, just in case old items slice might be invalid after mutation
-            }
+        }
+
+        _ = cimgui_dll.igTableNextColumn();
+        cimgui_dll.igText(item.caption);
+        if (cimgui_dll.igIsItemHovered(0)) {
+            cimgui_dll.igSetTooltip(
+                "ID: 0x%x\nBase Item Box Capacity: %d\nBase Capacity: %d",
+                @intFromPtr(item.id.raw),
+                item.base_item_box_capacity,
+                item.base_capacity,
+            );
+        }
+
+        _ = cimgui_dll.igTableNextColumn();
+        const category_name = g.items.categories.get(item.category) orelse "Unknown";
+        cimgui_dll.igText(category_name);
+
+        _ = cimgui_dll.igTableNextColumn();
+        const btn_label = try std.fmt.bufPrintSentinel(
+            &label_buf,
+            "Pickup##0x{x}-{}",
+            .{ @intFromPtr(item.id.raw), items_local_id },
+            0,
+        );
+        if (cimgui_dll.igButton(btn_label, .{})) {
+            try g.performPickup(item.id);
+            return; // new-frame, just in case old items slice might be invalid after mutation
         }
     }
 }
@@ -331,7 +335,6 @@ fn drawItemCatalog() !void {
     var items_local_id: i32 = 0;
 
     var iter = try g.items.iterator(&u.scope);
-    defer u.scope.reset();
     while (try iter.next()) |item| {
         if (u.item_catalog_fliter_category) |selected| {
             if (item.category.raw != selected.raw) {
@@ -404,6 +407,49 @@ fn drawItemCatalog() !void {
     }
 }
 
+fn drawFileCatalog() !void {
+    const files = g.files.filesSlice();
+
+    if (!cimgui_dll.igBeginTable(
+        "##file_catalog_table",
+        3,
+        cimgui.ImGuiTableFlags_Borders | cimgui.ImGuiTableFlags_Resizable,
+        .{},
+        0.0,
+    )) {
+        return;
+    }
+    defer cimgui_dll.igEndTable();
+
+    cimgui_dll.igTableSetupColumn("Title", cimgui.ImGuiTableColumnFlags_WidthStretch, 100.0, 0);
+    cimgui_dll.igTableSetupColumn("Category", cimgui.ImGuiTableColumnFlags_WidthStretch, 50.0, 0);
+    cimgui_dll.igTableSetupColumn("Action", cimgui.ImGuiTableColumnFlags_WidthStretch, 100.0, 0);
+
+    cimgui_dll.igTableHeadersRow();
+
+    for (files, 0..) |file, i| {
+        cimgui_dll.igTableNextRow(0, 0.0);
+
+        _ = cimgui_dll.igTableNextColumn();
+        cimgui_dll.igText(file.title);
+
+        _ = cimgui_dll.igTableNextColumn();
+        cimgui_dll.igText(@tagName(file.file_category));
+
+        _ = cimgui_dll.igTableNextColumn();
+        const acquire_btn_lbl = try std.fmt.bufPrintSentinel(
+            &label_buf,
+            "Acquire##0x{x}-{}",
+            .{ @intFromPtr(file.file_id.raw), i },
+            0,
+        );
+        if (cimgui_dll.igButton(acquire_btn_lbl.ptr, .{})) {
+            _ = try g.player.?.file_mg.acquire(&u.scope, file.file_id, u.file_acquire_option);
+            return; // new-frame
+        }
+    }
+}
+
 fn drawObjectives() !void {
     const objectives = g.player.?.objective_mg.objectivesSlice();
     if (objectives.len == 0) {
@@ -412,7 +458,7 @@ fn drawObjectives() !void {
     }
 
     cimgui_dll.igTextColored(color_warning, "Actions are useless, these don't really update any in-game progress, only updates the UI." ++
-        "It's mainly there to track objectives even during cutscenes :).");
+        "\nIt's mainly there to track objectives even during cutscenes :).");
 
     if (!cimgui_dll.igBeginTable("##objectives_table", 5, cimgui.ImGuiTableFlags_Borders | cimgui.ImGuiTableFlags_Resizable, .{}, 0.0)) {
         return;
@@ -488,7 +534,7 @@ fn drawGameJumps() !void {
     }
     if (cimgui_dll.igIsItemHovered(0)) {
         cimgui_dll.igSetTooltip(
-            "It's recommended to use this only when there's no Game Jumps available.\n" ++
+            "It's recommended to use this only when there's no Game Jumps available or when the next step is not loading area.\n" ++
                 "For some chapters character might fall through and can't continue, inventory might be empty.",
         );
     }
@@ -530,6 +576,20 @@ fn drawGameJumps() !void {
         }
 
         _ = cimgui_dll.igTableNextColumn();
+
+        {
+            const btn_label = try std.fmt.bufPrintSentinel(
+                &label_buf,
+                "Edit##0x{x}-{}",
+                .{ @intFromPtr(game_jump_action.owner_component.managed.raw), i },
+                0,
+            );
+            if (cimgui_dll.igButton(btn_label, .{})) {
+                try behaviortree_edits.setEditableTreesFromFlow(@ptrCast(game_jump_action.owner_component.managed.raw));
+                u.focus_btree_edits = true;
+                return;
+            }
+        }
 
         {
             const btn_label = try std.fmt.bufPrintSentinel(
@@ -603,465 +663,6 @@ fn drawGameJumps() !void {
     }
 }
 
-fn leftLabelInputText(
-    label: [*c]const u8,
-    input_label: [*c]const u8,
-    buf: [*c]u8,
-    buf_size: usize,
-    flags: cimgui.ImGuiInputTextFlags,
-    input_width: f32,
-) bool {
-    const item_spacing = cimgui_dll.igGetStyle().*.ItemSpacing;
-
-    var text_size: cimgui.ImVec2 = .{};
-    cimgui_dll.igCalcTextSize(&text_size, label, null, false, -1.0);
-
-    cimgui_dll.igText(label);
-    cimgui_dll.igSameLine(0.0, -1.0);
-    cimgui_dll.igSetNextItemWidth(input_width - text_size.x - item_spacing.x);
-    return cimgui_dll.igInputText(input_label, buf, buf_size, flags, null, null);
-}
-
-fn drawLevelFlowsRange(level_flows: []managed_types.LevelFlowObject, start: usize, end: usize) !void {
-    for (start..end) |i| {
-        const flow_obj = level_flows[i];
-        const flow_data = flow_obj.data orelse continue;
-        const component = flow_obj.component;
-
-        if (u.filter_name_hash != 0 and flow_obj.name_hash != u.filter_name_hash) {
-            continue;
-        }
-        //const flow = flow_obj.component;
-        if (u.owner_name_search) |search| {
-            if (std.ascii.findIgnoreCase(flow_data.owner_name, search) == null) {
-                continue;
-            }
-        }
-        if (u.action_type_search) |search| {
-            var found = false;
-            for (flow_data.action_names) |action_name| {
-                if (std.ascii.findIgnoreCase(action_name, search) != null) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                continue;
-            }
-        }
-
-        cimgui_dll.igTableNextRow(0, 0.0);
-
-        _ = cimgui_dll.igTableNextColumn();
-        cimgui_dll.igText("%u", flow_obj.name_hash);
-        if (cimgui_dll.igIsItemHovered(0) and cimgui_dll.igIsMouseReleased_Nil(cimgui.ImGuiMouseButton_Right)) {
-            const copy_text = try std.fmt.bufPrintSentinel(&label_buf, "0x{x}", .{@intFromPtr(component.managed.raw)}, 0);
-            cimgui_dll.igSetClipboardText(copy_text);
-        }
-
-        _ = cimgui_dll.igTableNextColumn();
-        cimgui_dll.igText(flow_data.owner_name);
-
-        _ = cimgui_dll.igTableNextColumn();
-        for (0.., flow_data.action_names) |j, action_name| {
-            cimgui_dll.igText("[%d] %s", j, action_name.ptr);
-        }
-
-        _ = cimgui_dll.igTableNextColumn();
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Start##0x{x}-{}",
-                .{ @intFromPtr(component.managed.raw), i },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                // try g.startFlowActions(component);
-                try g.btree_management.queueFlowBTreeAction(.start, component);
-                return;
-            }
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip("Might cause crash, forcefully calls the action start function.");
-            }
-        }
-
-        cimgui_dll.igSameLine(0.0, -1.0);
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Start Native##0x{x}-{}",
-                .{ @intFromPtr(component.managed.raw), i },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                try g.btree_management.queueFlowBTreeAction(.start_native, component);
-                return;
-            }
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip("Uses the native function to start, might need an update for the plugin for updated vtable/function pointer offset" ++
-                    "\nMight cause crash, forcefully calls the action start function.");
-            }
-        }
-
-        if (u.filter_name_hash != 0) continue;
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Next##0x{x}-{}",
-                .{ @intFromPtr(component.managed.raw), i },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                _ = try g.level_flow_manager.call(.sendNext, &u.scope, .fo(g.sdk), .{ flow_obj.name_hash, null });
-                return;
-            }
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip("Requests the next step for the level flow, different name hash means different level flow, press it multiple times to progress in-game.");
-            }
-        }
-
-        cimgui_dll.igSameLine(0.0, -1.0);
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Set##0x{x}-{}",
-                .{ @intFromPtr(flow_obj.component.managed.raw), i },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                try g.level_flow_manager.call(
-                    .requestChangeProgressiveNumber,
-                    &u.scope,
-                    .fo(g.sdk),
-                    .{ flow_obj.name_hash, u.flow_progressive_number },
-                );
-                return;
-            }
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip("Sets the progressive number to the inputted value in the Config section.\n" ++
-                    "Can be used to skip or repeat certain sections if the flow supports it.\n" ++
-                    "Usually you stop the flow and then set the progressive number again and again.");
-            }
-        }
-
-        // line break
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Reset##0x{x}-{}",
-                .{ @intFromPtr(component.managed.raw), i },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                try g.level_flow_manager.call(.requestResetProgressiveNumber, &u.scope, .fo(g.sdk), .{flow_obj.name_hash});
-                return;
-            }
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip("Requests the owner level flow to reset, start from the first flow" ++
-                    "\nMight make the level broken resulting unable to progress in-game.");
-            }
-        }
-
-        cimgui_dll.igSameLine(0.0, -1.0);
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Stop##0x{x}-{}",
-                .{ @intFromPtr(component.managed.raw), i },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                try g.level_flow_manager.call(.requestStopProgressive, &u.scope, .fo(g.sdk), .{flow_obj.name_hash});
-                return;
-            }
-        }
-
-        cimgui_dll.igSameLine(0.0, -1.0);
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Read##0x{x}-{}",
-                .{ @intFromPtr(component.managed.raw), i },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                u.read_flow_progressive_number = try g.level_flow_manager.call(
-                    .getProgressiveNumber,
-                    &u.scope,
-                    .fo(g.sdk),
-                    .{flow_obj.name_hash},
-                );
-                return;
-            }
-        }
-    }
-}
-
-fn drawLevelFlows() !void {
-    {
-        if (cimgui_dll.igButton("Start All", .{})) {
-            try g.level_flow_manager.call(.requestStartFlow, &u.scope, .fo(g.sdk), .{});
-            return; // new-frame
-        }
-        cimgui_dll.igSameLine(0.0, -1.0);
-        if (cimgui_dll.igButton("Reset All", .{})) {
-            try g.level_flow_manager.call(.requestReset, &u.scope, .fo(g.sdk), .{});
-            return; // new-frame
-        }
-        cimgui_dll.igSameLine(0.0, -1.0);
-        if (cimgui_dll.igButton("Stop All", .{})) {
-            try g.level_flow_manager.call(.requestStopFlow, &u.scope, .fo(g.sdk), .{});
-            return; // new-frame
-        }
-    }
-
-    {
-        cimgui_dll.igText("Filter by NameHash:");
-
-        if (u.filter_name_hash == 0) {
-            cimgui_dll.igPushStyleColor_U32(cimgui.ImGuiCol_Button, color_active);
-            cimgui_dll.igPushStyleColor_U32(cimgui.ImGuiCol_ButtonHovered, color_active);
-            _ = cimgui_dll.igButton("All", .{});
-            cimgui_dll.igPopStyleColor(2);
-        } else {
-            if (cimgui_dll.igButton("All", .{})) {
-                u.filter_name_hash = 0;
-            }
-        }
-        cimgui_dll.igSameLine(0, -1.0);
-
-        var same_line_remaining: u32 = 5;
-
-        var name_hashes = g.level_flow_managed_objects.name_hashes.iterator();
-        var reset_filter_name_hash = u.filter_name_hash != 0;
-        while (name_hashes.next()) |entry| {
-            const name_hash = entry.key_ptr.*;
-            const name_count = entry.value_ptr.*;
-
-            var active = false;
-            if (u.filter_name_hash != 0 and u.filter_name_hash == name_hash) {
-                cimgui_dll.igPushStyleColor_U32(cimgui.ImGuiCol_Button, color_active);
-                cimgui_dll.igPushStyleColor_U32(cimgui.ImGuiCol_ButtonHovered, color_active);
-                active = true;
-                reset_filter_name_hash = false;
-            }
-
-            const btn_label = try std.fmt.bufPrintSentinel(&label_buf, "{}", .{name_hash}, 0);
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                if (u.filter_name_hash == name_hash) {
-                    u.filter_name_hash = 0;
-                } else {
-                    u.filter_name_hash = name_hash;
-                    u.filter_name_hash_count = name_count;
-                }
-            }
-
-            if (active) {
-                cimgui_dll.igPopStyleColor(2);
-            }
-
-            if (same_line_remaining > 0) {
-                cimgui_dll.igSameLine(0, -1.0);
-                same_line_remaining -= 1;
-            } else {
-                same_line_remaining = 6; // one less at start because of the "All" button
-            }
-        }
-        if (reset_filter_name_hash) {
-            u.filter_name_hash = 0;
-            u.filter_name_hash_count = 0;
-        }
-        cimgui_dll.igNewLine();
-    }
-
-    {
-        const item_spacing = cimgui_dll.igGetStyle().*.ItemSpacing;
-        var avail: cimgui.ImVec2 = .{};
-        cimgui_dll.igGetContentRegionAvail(&avail);
-        const input_width: f32 = (avail.x * 0.5) - (item_spacing.x * 0.5);
-
-        if (leftLabelInputText(
-            "Owner Search",
-            "##owner_name_search",
-            &u.owner_name_search_buf,
-            u.owner_name_search_buf.len,
-            cimgui.ImGuiInputTextFlags_AutoSelectAll,
-            input_width,
-        )) {
-            if (u.owner_name_search_buf[0] != 0) {
-                u.owner_name_search = std.mem.sliceTo(u.owner_name_search_buf[0..], 0);
-            } else {
-                u.owner_name_search = null;
-            }
-        }
-
-        cimgui_dll.igSameLine(0.0, -1.0);
-
-        if (leftLabelInputText(
-            "Action Search",
-            "##action_type_search",
-            &u.action_type_search_buf,
-            u.action_type_search_buf.len,
-            cimgui.ImGuiInputTextFlags_AutoSelectAll,
-            input_width,
-        )) {
-            if (u.action_type_search_buf[0] != 0) {
-                u.action_type_search = std.mem.sliceTo(u.action_type_search_buf[0..], 0);
-            } else {
-                u.action_type_search = null;
-            }
-        }
-    }
-
-    const level_flows = g.level_flow_managed_objects.collection.items;
-    if (u.filter_name_hash != 0) {
-        cimgui_dll.igText("Total flows: %d", u.filter_name_hash_count);
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Next##0x{x}-{}",
-                .{ u.filter_name_hash, u.filter_name_hash_count },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                _ = try g.level_flow_manager.call(.sendNext, &u.scope, .fo(g.sdk), .{ u.filter_name_hash, null });
-                return;
-            }
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip("Requests the next step for the level flow, different name hash means different level flow, press it multiple times to progress in-game.");
-            }
-        }
-
-        cimgui_dll.igSameLine(0.0, -1.0);
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Set##0x{x}-{}",
-                .{ u.filter_name_hash, u.filter_name_hash_count },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                try g.level_flow_manager.call(
-                    .requestChangeProgressiveNumber,
-                    &u.scope,
-                    .fo(g.sdk),
-                    .{ u.filter_name_hash, u.flow_progressive_number },
-                );
-                return;
-            }
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip("Sets the progressive number to the inputted value in the Config section.\n" ++
-                    "Can be used to skip or repeat certain sections if the flow supports it.\n" ++
-                    "Usually you stop the flow and then set the progressive number again and again.");
-            }
-        }
-
-        cimgui_dll.igSameLine(0.0, -1.0);
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Reset##0x{x}-{}",
-                .{ u.filter_name_hash, u.filter_name_hash_count },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                try g.level_flow_manager.call(.requestResetProgressiveNumber, &u.scope, .fo(g.sdk), .{u.filter_name_hash});
-                return;
-            }
-        }
-
-        cimgui_dll.igSameLine(0.0, -1.0);
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Stop##0x{x}-{}",
-                .{ u.filter_name_hash, u.filter_name_hash_count },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                try g.level_flow_manager.call(.requestStopProgressive, &u.scope, .fo(g.sdk), .{u.filter_name_hash});
-                return;
-            }
-        }
-
-        cimgui_dll.igSameLine(0.0, -1.0);
-
-        {
-            const btn_label = try std.fmt.bufPrintSentinel(
-                &label_buf,
-                "Read##0x{x}-{}",
-                .{ u.filter_name_hash, u.filter_name_hash_count },
-                0,
-            );
-            if (cimgui_dll.igButton(btn_label, .{})) {
-                u.read_flow_progressive_number = try g.level_flow_manager.call(
-                    .getProgressiveNumber,
-                    &u.scope,
-                    .fo(g.sdk),
-                    .{u.filter_name_hash},
-                );
-                return;
-            }
-            if (cimgui_dll.igIsItemHovered(0)) {
-                cimgui_dll.igSetTooltip("Reads the progressive number for the level flow.");
-            }
-        }
-    } else {
-        cimgui_dll.igText("Total flows: %llu", level_flows.len);
-    }
-
-    if (u.read_flow_progressive_number) |number| {
-        cimgui_dll.igText("Progressive Number: %d", number);
-        cimgui_dll.igSameLine(0, -1.0);
-        if (cimgui_dll.igButton("Clear##level_prog_number_clear", .{})) {
-            u.read_flow_progressive_number = null;
-            return; // new-frame
-        }
-    }
-
-    if (!cimgui_dll.igBeginTable("##level_flow_table", 4, cimgui.ImGuiTableFlags_Borders | cimgui.ImGuiTableFlags_Resizable, .{}, 0.0)) {
-        return;
-    }
-    defer cimgui_dll.igEndTable();
-
-    cimgui_dll.igTableSetupColumn("Name Hash", cimgui.ImGuiTableColumnFlags_WidthStretch, 30.0, 0);
-    cimgui_dll.igTableSetupColumn("Owner Name", cimgui.ImGuiTableColumnFlags_WidthStretch, 30.0, 0);
-    cimgui_dll.igTableSetupColumn("Actions", cimgui.ImGuiTableColumnFlags_WidthStretch, 300.0, 0);
-    cimgui_dll.igTableSetupColumn("Action", cimgui.ImGuiTableColumnFlags_WidthStretch, 100.0, 0);
-
-    cimgui_dll.igTableHeadersRow();
-
-    // Why clipper? Goal is to be below 1ms re-framework frame time.
-
-    if (u.filter_name_hash != 0 and u.filter_name_hash_count <= 250) {
-        // no need to use clipper if there's only a few items, also it causes some issues with the "All" button when filtering by name hash
-        try drawLevelFlowsRange(level_flows, 0, level_flows.len);
-        return;
-    }
-
-    const clipper: *cimgui.ImGuiListClipper = cimgui_dll.ImGuiListClipper_ImGuiListClipper();
-    defer cimgui_dll.ImGuiListClipper_destroy(clipper);
-    cimgui_dll.ImGuiListClipper_Begin(clipper, @intCast(level_flows.len), -1.0);
-    defer cimgui_dll.ImGuiListClipper_End(clipper);
-
-    while (cimgui_dll.ImGuiListClipper_Step(clipper)) {
-        const start: usize = @intCast(clipper.DisplayStart);
-        const end: usize = @intCast(clipper.DisplayEnd);
-
-        try drawLevelFlowsRange(level_flows, start, end);
-    }
-}
-
 fn drawMultiChoiceFrom(comptime T: type, label: [*c]const u8, current: *T) void {
     cimgui_dll.igText(label);
 
@@ -1106,6 +707,8 @@ fn drawConfig() void {
     cimgui_dll.igSeparator();
     drawMultiChoiceFrom(ItemStockChangedEventTypeTag, "Add Item Event Type:", &u.add_item_event_type);
     cimgui_dll.igSeparator();
+    drawMultiChoiceFrom(managed_types.FileAcquireOptionBit, "File Acquire Option:", &u.file_acquire_option);
+    cimgui_dll.igSeparator();
     drawMultiChoiceFrom(managed_types.SaveSlotSelectionMethod, "Manual Save Slot Selection:", &u.manual_save_slot_selection_method);
     cimgui_dll.igSeparator();
     {
@@ -1114,7 +717,7 @@ fn drawConfig() void {
         _ = cimgui_dll.igInputScalar(
             "Level Flow Progressive Number",
             cimgui.ImGuiDataType_S32,
-            &u.flow_progressive_number,
+            &level_flows.flow_progressive_number,
             &add_step,
             &add_step_fast,
             "%d",
@@ -1123,7 +726,6 @@ fn drawConfig() void {
     }
 }
 
-const debug_behavior_tree = @import("debug_behavior_tree.zig");
 pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
     try cimgui_dll.init();
 
@@ -1134,7 +736,9 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
         data.user_data,
     );
 
-    try debug_behavior_tree.draw();
+    if (root.is_debug) {
+        try @import("debug_behavior_tree.zig").draw();
+    }
 
     if (!u.show_window) {
         if (cimgui_dll.igCollapsingHeader_BoolPtr("RE9 Forced in Zig", null, 0)) {
@@ -1152,7 +756,18 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
     g.api.lockLua();
     defer g.api.unlockLua();
 
-    if (g.items.categories.count() == 0 or g.player == null) {
+    defer u.scope.reset();
+
+    if (g.items.categories.count() == 0) {
+        cimgui_dll.igText("Player context not initialized. Please load/reload a save and wait until the character is loaded.");
+        return;
+    }
+
+    if (g.player == null) {
+        if (cimgui_dll.igButton("Refresh All", .{})) {
+            try root.new();
+            return; // new-frame
+        }
         cimgui_dll.igText("Player context not initialized. Please load/reload a save and wait until the character is loaded.");
         return;
     }
@@ -1207,10 +822,16 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
         try drawPickups();
     }
 
-    if (cimgui_dll.igBeginTabItem("Items Catalog", null, cimgui.ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
+    if (cimgui_dll.igBeginTabItem("Item Catalog", null, cimgui.ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
         defer cimgui_dll.igEndTabItem();
 
         try drawItemCatalog();
+    }
+
+    if (cimgui_dll.igBeginTabItem("File Catalog", null, cimgui.ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
+        defer cimgui_dll.igEndTabItem();
+
+        try drawFileCatalog();
     }
 
     if (cimgui_dll.igBeginTabItem("Objectives", null, cimgui.ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
@@ -1228,7 +849,20 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
     if (cimgui_dll.igBeginTabItem("Level Flows", null, cimgui.ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
         defer cimgui_dll.igEndTabItem();
 
-        try drawLevelFlows();
+        try level_flows.draw();
+    }
+
+    if (u.focus_btree_edits) {
+        if (cimgui_dll.igBeginTabItem("Behavior Tree Edits", null, cimgui.ImGuiTabItemFlags_NoCloseWithMiddleMouseButton | cimgui.ImGuiTabItemFlags_SetSelected)) {
+            defer cimgui_dll.igEndTabItem();
+
+            try behaviortree_edits.draw();
+        }
+        u.focus_btree_edits = false;
+    } else if (cimgui_dll.igBeginTabItem("Behavior Tree Edits", null, cimgui.ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
+        defer cimgui_dll.igEndTabItem();
+
+        try behaviortree_edits.draw();
     }
 }
 
@@ -1237,4 +871,9 @@ pub fn init() !void {
     cimgui_dll.init() catch |e| {
         log.err("Failed to initialize cimgui_dll: {}", .{e});
     };
+}
+
+pub fn reset() void {
+    _ = u.arena.reset(.retain_capacity);
+    behaviortree_edits.reset();
 }
