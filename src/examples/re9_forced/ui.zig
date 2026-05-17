@@ -10,6 +10,7 @@ const managed_types = @import("managed_types.zig");
 
 const level_flows = @import("ui/level_flows.zig");
 const behaviortree_edits = @import("ui/behaviortree_edits.zig");
+const enemy_spawn = @import("ui/enemy_spawn.zig");
 
 const interop = re.interop;
 
@@ -69,7 +70,6 @@ pub const u = struct {
     fn init() !void {
         arena = .init(g.allocator);
         scope = g.interop_cache.newScope(g.allocator);
-        behaviortree_edits.reset();
     }
 };
 
@@ -758,6 +758,18 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
 
     defer u.scope.reset();
 
+    if (root.is_debug) {
+        if (cimgui_dll.igButton("Test1", .{})) {
+            try root.test1();
+            return;
+        }
+        cimgui_dll.igSameLine(0, -1);
+        if (cimgui_dll.igButton("Test2", .{})) {
+            try root.test2();
+            return;
+        }
+    }
+
     if (g.items.categories.count() == 0) {
         cimgui_dll.igText("Player context not initialized. Please load/reload a save and wait until the character is loaded.");
         return;
@@ -765,6 +777,7 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
 
     if (g.player == null) {
         if (cimgui_dll.igButton("Refresh All", .{})) {
+            try root.staticNew();
             try root.new();
             return; // new-frame
         }
@@ -775,6 +788,7 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
     cimgui_dll.igTextColored(color_warning, "Warning: Modifying any of the states can cause instability and crashes. Always keep backup saves.");
 
     if (cimgui_dll.igButton("Refresh All", .{})) {
+        try root.staticNew();
         try root.new();
         return; // new-frame
     }
@@ -864,10 +878,18 @@ pub fn draw(data: *re.API_C.REFImGuiFrameCbData) !void {
 
         try behaviortree_edits.draw();
     }
+
+    if (cimgui_dll.igBeginTabItem("Enemy Spawn", null, cimgui.ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
+        defer cimgui_dll.igEndTabItem();
+
+        try enemy_spawn.draw();
+    }
 }
 
 pub fn init() !void {
     try u.init();
+    behaviortree_edits.reset();
+    enemy_spawn.reset();
     cimgui_dll.init() catch |e| {
         log.err("Failed to initialize cimgui_dll: {}", .{e});
     };
@@ -876,4 +898,5 @@ pub fn init() !void {
 pub fn reset() void {
     _ = u.arena.reset(.retain_capacity);
     behaviortree_edits.reset();
+    enemy_spawn.reset();
 }

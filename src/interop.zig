@@ -88,6 +88,10 @@ pub const ValueType = struct {
         return @ptrCast(@alignCast(&self.data[managed_object_runtime_size]));
     }
 
+    pub inline fn valueSlice(self: Self) []align(@alignOf(*anyopaque)) u8 {
+        return self.data[managed_object_runtime_size..];
+    }
+
     pub inline fn call(
         self: Self,
         sig: [:0]const u8,
@@ -350,6 +354,13 @@ pub const ViaComponent = opaque {
         return .{ .raw = @ptrCast(@alignCast(owner_ptr.*)) };
     }
 
+    pub inline fn setOwner(self: *Self, owner: ?api.sdk.ManagedObject) void {
+        @setRuntimeSafety(false);
+        const ptr = @intFromPtr(self);
+        const owner_ptr: *?api.sdk.ManagedObject = @ptrFromInt(ptr + managed_object_runtime_size + owner_offset);
+        owner_ptr.* = owner;
+    }
+
     // start of child components..
     pub inline fn childComponent(self: *Self) ?*Self {
         @setRuntimeSafety(false);
@@ -413,7 +424,48 @@ pub fn defaultFromZigInterop(
             out.* = @ptrCast(managed_string.raw);
             return;
         },
-        @Vector(2, f32) => {},
+        @Vector(2, f32) => {
+            if (comptime isSafeMode()) {
+                const float2_type_name = "via.Float2";
+                const viaf2_type_name = "via.vec2";
+                var full_name_buf: [@max(float2_type_name.len, viaf2_type_name.len)]u8 = undefined;
+                const full_name = try to_type_def.getFullName(.fo(sdk), &full_name_buf);
+                if (!std.mem.eql(u8, float2_type_name, full_name) and !std.mem.eql(u8, viaf2_type_name, full_name)) {
+                    return error.ExpectedFloat2Type;
+                }
+            }
+            const v2: *@Vector(2, f32) = @ptrCast(@alignCast(out));
+            v2.* = arg;
+            return;
+        },
+        @Vector(3, f32) => {
+            if (comptime isSafeMode()) {
+                const float3_type_name = "via.Float3";
+                const viaf3_type_name = "via.vec3";
+                var full_name_buf: [@max(float3_type_name.len, viaf3_type_name.len)]u8 = undefined;
+                const full_name = try to_type_def.getFullName(.fo(sdk), &full_name_buf);
+                if (!std.mem.eql(u8, float3_type_name, full_name) and !std.mem.eql(u8, viaf3_type_name, full_name)) {
+                    return error.ExpectedFloat3Type;
+                }
+            }
+            const v3: *@Vector(3, f32) = @ptrCast(@alignCast(out));
+            v3.* = arg;
+            return;
+        },
+        @Vector(4, f32) => {
+            if (comptime isSafeMode()) {
+                const float4_type_name = "via.Float4";
+                const viaf4_type_name = "via.vec4";
+                var full_name_buf: [@max(float4_type_name.len, viaf4_type_name.len)]u8 = undefined;
+                const full_name = try to_type_def.getFullName(.fo(sdk), &full_name_buf);
+                if (!std.mem.eql(u8, float4_type_name, full_name) and !std.mem.eql(u8, viaf4_type_name, full_name)) {
+                    return error.ExpectedFloat4Type;
+                }
+            }
+            const v4: *@Vector(4, f32) = @ptrCast(@alignCast(out));
+            v4.* = arg;
+            return;
+        },
         SystemStringView => {
             return defaultFromZigInterop(sdk_ptr, scope, to_type_def, arg.data, out);
         },
@@ -442,7 +494,7 @@ pub fn defaultFromZigInterop(
             }
 
             const b: [*]u8 = @ptrCast(out);
-            @memcpy(b[0..arg.data.len], arg.data);
+            @memcpy(b, arg.valueSlice());
             return;
         },
         SystemArray => {
@@ -492,9 +544,19 @@ pub fn defaultFromZigInterop(
             return;
         },
         .comptime_float => {
-            const b: [*]u8 = @ptrCast(out);
-            std.mem.writeInt(u64, b[0..@sizeOf(u64)], @intFromFloat(arg), native);
-            return;
+            const type_name_system_single = "System.Single";
+            const type_name_system_double = "System.Double";
+            var full_name_buf: [@max(type_name_system_single.len, type_name_system_double.len)]u8 = undefined;
+            const full_name = try to_type_def.getFullName(.fo(sdk), &full_name_buf);
+            if (std.mem.eql(u8, full_name, type_name_system_single)) {
+                const b: [*]u8 = @ptrCast(out);
+                std.mem.writeInt(u32, b[0..@sizeOf(u32)], @bitCast(@as(f32, arg)), native);
+            } else if (std.mem.eql(u8, full_name, type_name_system_double)) {
+                const b: [*]u8 = @ptrCast(out);
+                std.mem.writeInt(u64, b[0..@sizeOf(u64)], @bitCast(@as(f64, arg)), native);
+            } else {
+                return error.ExpectedFloatType;
+            }
         },
         .@"enum" => {
             // TODO: use the actual underlying type of the enum, `getUnderlyingType`
@@ -571,7 +633,8 @@ pub fn defaultToZigInterop(RetType: type) fn (*const anyopaque, *Scope, api.sdk.
                     if (comptime isSafeMode()) {
                         const float2_type_name = "via.Float2";
                         const viaf2_type_name = "via.vec2";
-                        const full_name = try from_type_def.getFullName(.fo(sdk), null);
+                        var full_name_buf: [@max(float2_type_name.len, viaf2_type_name.len)]u8 = undefined;
+                        const full_name = try from_type_def.getFullName(.fo(sdk), &full_name_buf);
                         if (!std.mem.eql(u8, float2_type_name, full_name) and !std.mem.eql(u8, viaf2_type_name, full_name)) {
                             return error.ExpectedFloat2Type;
                         }
@@ -582,7 +645,8 @@ pub fn defaultToZigInterop(RetType: type) fn (*const anyopaque, *Scope, api.sdk.
                     if (comptime isSafeMode()) {
                         const float3_type_name = "via.Float3";
                         const viaf3_type_name = "via.vec3";
-                        const full_name = try from_type_def.getFullName(.fo(sdk), null);
+                        var full_name_buf: [@max(float3_type_name.len, viaf3_type_name.len)]u8 = undefined;
+                        const full_name = try from_type_def.getFullName(.fo(sdk), &full_name_buf);
                         if (!std.mem.eql(u8, float3_type_name, full_name) and !std.mem.eql(u8, viaf3_type_name, full_name)) {
                             return error.ExpectedFloat3Type;
                         }
@@ -593,7 +657,8 @@ pub fn defaultToZigInterop(RetType: type) fn (*const anyopaque, *Scope, api.sdk.
                     if (comptime isSafeMode()) {
                         const float4_type_name = "via.Float4";
                         const viaf4_type_name = "via.vec4";
-                        const full_name = try from_type_def.getFullName(.fo(sdk), null);
+                        var full_name_buf: [@max(float4_type_name.len, viaf4_type_name.len)]u8 = undefined;
+                        const full_name = try from_type_def.getFullName(.fo(sdk), &full_name_buf);
                         if (!std.mem.eql(u8, float4_type_name, full_name) and !std.mem.eql(u8, viaf4_type_name, full_name)) {
                             return error.ExpectedFloat4Type;
                         }
@@ -742,7 +807,7 @@ fn MethodData(comptime method: anytype, comptime i: anytype) type {
     };
 }
 
-fn buildMethodArgsImpl(
+inline fn buildMethodArgsImpl(
     sdk: *const anyopaque,
     scope: *Scope,
     method_metadata: *const MethodMetadata,
@@ -756,8 +821,40 @@ fn buildMethodArgsImpl(
 
     inline for (0..args_len) |i| {
         const arg = @field(args, std.fmt.comptimePrint("{d}", .{i}));
-        if (@TypeOf(arg) == ValueType) {
-            out[i] = arg.valuePtr();
+        // TODO: make the interop detection better
+        const is_default_interop = defaultFromZigInterop == param_interops[i];
+        if (is_default_interop) {
+            const ArgT = @TypeOf(arg);
+            switch (ArgT) {
+                ValueType => {
+                    out[i] = arg.valuePtr();
+                },
+                // TODO: should we make these pre-allocated in the caller functin?
+                @Vector(2, f32) => {
+                    const ptr = try scope.arena.allocator().create(@Vector(4, f32));
+                    ptr.* = @as(@Vector(4, f32), .{ arg[0], arg[1], 0.0, 0.0 });
+                    out[i] = ptr;
+                },
+                @Vector(3, f32) => {
+                    const ptr = try scope.arena.allocator().create(@Vector(4, f32));
+                    ptr.* = @as(@Vector(4, f32), .{ arg[0], arg[1], arg[2], 0.0 });
+                    out[i] = ptr;
+                },
+                @Vector(4, f32) => {
+                    const ptr = try scope.arena.allocator().create(@Vector(4, f32));
+                    ptr.* = arg;
+                    out[i] = ptr;
+                },
+                else => {
+                    try param_interops[i](
+                        sdk,
+                        scope,
+                        method_metadata.param_type_defs[i],
+                        arg,
+                        &out[i],
+                    );
+                },
+            }
         } else {
             try param_interops[i](
                 sdk,

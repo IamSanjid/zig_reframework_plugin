@@ -29,13 +29,17 @@ pub const field_specs = Scope.field_specs;
 ///
 /// Basically `ManagedObjectType` but without manually "creating" the type at comptime but
 /// "creates" some sort of metdata cache map as you use it.
-pub fn ResolvedType(comptime type_name: [:0]const u8) type {
+pub fn ResolvedType(comptime full_type_name: [:0]const u8) type {
     return struct {
         var cached_metadata: std.atomic.Value(?*TypeDefMetadata) = .init(null);
 
         type_def_metadata: *TypeDefMetadata,
 
         const ResolvedT = @This();
+
+        pub fn fullTypeName() [:0]const u8 {
+            return full_type_name;
+        }
 
         pub fn init(cache: *ManagedTypeCache, tdb: api.sdk.Tdb, sdk: api.VerifiedSdk(.{ .tdb = tdb_specs })) !ResolvedT {
             return .{
@@ -88,8 +92,8 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                     }
                     return @ptrCast(@alignCast(obj));
                 },
-                .optional => |o| {
-                    if (o) |val| {
+                .optional => {
+                    if (obj) |val| {
                         return asMethodThis(val);
                     } else {
                         return null;
@@ -98,7 +102,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                 .null => return null,
                 .undefined => return null,
                 else => {
-                    @compileError("Only pointer types, optional pointer types, ManagedObject or interop structs with 'managed' field are supported as method call object.");
+                    @compileError("Only pointer types, optional pointer types, ManagedObject or interop structs with 'managed' field are supported as method call object. Found: " ++ @typeName(ObjType));
                 },
             }
         }
@@ -161,7 +165,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
             return if (cached_metadata.load(.acquire)) |metadata| blk: {
                 break :blk metadata;
             } else blk: {
-                const type_def = tdb.findType(.fo(sdk), type_name) orelse return error.NoTypeDefFound;
+                const type_def = tdb.findType(.fo(sdk), full_type_name) orelse return error.NoTypeDefFound;
 
                 try cache.lock();
                 defer cache.unlock();
@@ -269,10 +273,10 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
             };
         }
 
-        fn Instanced(ObjT: type) type {
+        pub fn Instanced(ObjT: type) type {
             return struct {
                 instance: ObjT,
-                scope: Scoped,
+                scoped: Scoped,
 
                 const InstanceT = @This();
 
@@ -305,7 +309,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                     }),
                     args: anytype,
                 ) !RetType {
-                    return self.scope.callWithInterops(self.instance, sig, param_interops, RetType, rInterop, .fo(sdk), args);
+                    return self.scoped.callWithInterops(self.instance, sig, param_interops, RetType, rInterop, .fo(sdk), args);
                 }
 
                 pub inline fn get(
@@ -332,7 +336,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                         .tdb = tdb_specs,
                     }),
                 ) !T {
-                    return self.scope.getWithInterop(self.instance, field, T, interop, .fo(sdk));
+                    return self.scoped.getWithInterop(self.instance, field, T, interop, .fo(sdk));
                 }
 
                 pub inline fn set(
@@ -359,7 +363,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
                     }),
                     value: anytype,
                 ) !void {
-                    return self.scope.setWithInterop(self.instance, field, interop, .fo(sdk), value);
+                    return self.scoped.setWithInterop(self.instance, field, interop, .fo(sdk), value);
                 }
             };
         }
@@ -373,7 +377,7 @@ pub fn ResolvedType(comptime type_name: [:0]const u8) type {
             pub fn instanced(self: Self, obj: anytype) Instanced(@TypeOf(obj)) {
                 return .{
                     .instance = obj,
-                    .scope = self,
+                    .scoped = self,
                 };
             }
 

@@ -8,6 +8,8 @@ pub const minimal = .{
         .functions = .{
             .get_tdb,
             .get_vm_context,
+            .get_resource_manager,
+            .typeof_,
             .get_managed_singleton,
             .get_native_singleton,
             .add_hook,
@@ -46,6 +48,8 @@ pub const minimal = .{
         },
         .reflection_property = .all,
         .vm_context = .all,
+        .resource_manager = .all,
+        .resource = .all,
     },
 };
 
@@ -54,8 +58,8 @@ pub const compact = .{
     .sdk = .{
         .functions = .{
             .get_tdb,
-            .get_resource_manager,
             .get_vm_context,
+            .get_resource_manager,
             .typeof_,
             .get_managed_singleton,
             .get_native_singleton,
@@ -102,12 +106,12 @@ pub const compact = .{
         .reflection_property = .{
             .is_static,
         },
-        .resource = .all,
-        .resource_manager = .all,
         .tdb = .all,
         .type_definition = .all,
         .type_info = .all,
         .vm_context = .all,
+        .resource = .all,
+        .resource_manager = .all,
     },
 };
 

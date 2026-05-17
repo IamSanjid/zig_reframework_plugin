@@ -215,6 +215,22 @@ pub const LevelFlowObject = struct {
     } = null,
 };
 
+pub const EnemyRoleAction = struct {
+    index: usize,
+    resume_point: @Vector(3, f32),
+    resume_yaw: f32,
+    return_point: @Vector(3, f32),
+    return_yaw: f32,
+};
+
+pub const EnemySpawnParamDetails = struct {
+    enemy_type_name: [:0]const u8,
+    game_obj_name: [:0]const u8,
+    base: re.sdk.ManagedObject,
+    position: @Vector(3, f32),
+    role_actions: []EnemyRoleAction,
+};
+
 // Demostration on how to directly coerce to re-engine il2cpp objects and zig-land.
 
 pub const GenericDictionary = extern struct {
@@ -248,6 +264,12 @@ comptime {
 pub const SystemArray = interop.SystemArray;
 
 pub const SystemGuid = interop.ValueType;
+
+pub const SystemEventCallback = interop.ManagedObjectTypeBuilder("app.SystemEventCallback")
+    .Method(.onStartSceneTransition, void, null)
+    .Method(.onSwitchedGameScene, void, null)
+    .Method(.onFinishTransitionForMainGame, void, null)
+    .Build();
 
 pub const ItemCategory = re.sdk.ManagedObject;
 pub const ItemId = re.sdk.ManagedObject;
@@ -454,13 +476,59 @@ pub const FileDetailData = interop.ManagedObjectTypeBuilder("app.FileDetailData"
 pub const PlayerContext = interop.ManagedObjectTypeBuilder("app.PlayerContext")
     .Method(.get_InventoryUserID, InvenotryUser, null)
     .Method(.get_FileInventoryUserID, FileInventoryUser, null)
+    .Method(.get_Position, @Vector(3, f32), null)
+    .Method(.set_Position, void, null)
+    .Param("via.vec3", @Vector(3, f32), null)
     .Method(.onUnlinked, void, null)
     .Build();
 
+pub const ContextID = re.sdk.ManagedObject;
+pub const MontageID = interop.ValueType;
+pub const CharacterKindID = re.sdk.ManagedObject;
+
+pub const MontageManager = interop.ManagedObjectTypeBuilder("app.MontageManager")
+    .Method(.addRef, void, null)
+    .Param("app.CharacterKindID", CharacterKindID, null)
+    .Param("app.MontageID", MontageID, null)
+    .Method(.releaseReference, void, null)
+    .Param("app.CharacterKindID", CharacterKindID, null)
+    .Param("app.MontageID", null)
+    .Method(.getRandomMontagePresetID, MontageID, null)
+    .Param("app.CharacterKindID", CharacterKindID, null)
+    .Param("System.Int32", i32, null)
+    .Build();
+
+pub const CharacterUsePurposeFlag = enum(c_int) {
+    default,
+    random_spawn = 2,
+    morph = 4,
+};
+
 pub const CharacterManager = interop.ManagedObjectTypeBuilder("app.CharacterManager")
     .Method(.getPlayerContextRef, ?PlayerContext, null)
+    .Method(.getContextRef, ?re.sdk.ManagedObject, null)
+    .Param("app.ContextID", ContextID, null)
     .Method(.notifyPlayerInitialized, void, null)
     .Method(.updateInveontoryForPlayer, void, null)
+    .Method(.clearOnCompleteDeactivateLeaveScene, void, null)
+    .Method(.getCharacterContextFactory, re.sdk.ManagedObject, null)
+    .Param("app.CharacterKindID", CharacterKindID, null)
+    .Method(.isUsedContext, bool, null)
+    .Param("app.ContextID", ContextID, null)
+    .Method(.getSpawnDataRef, ?re.sdk.ManagedObject, null)
+    .Param("app.ContextID", ContextID, null)
+    .Method(.readyContext, void, null)
+    .Param("app.ContextID", ContextID, null)
+    .Param("app.CharacterKindID", CharacterKindID, null)
+    .Param("System.Func`1<app.CharacterContext>", re.sdk.ManagedObject, null)
+    .Param("System.Boolean", bool, null)
+    .Method(.requestSpawn, void, null)
+    .Param("app.ContextID", ContextID, null)
+    .Param("app.CharacterKindID", CharacterKindID, null)
+    .Param("app.MontageID", MontageID, null)
+    .Param("System.Int32", i32, null)
+    .Param("System.Boolean", bool, null)
+    .Param("app.CharacterUsePurposeFlag", CharacterUsePurposeFlag, null)
     .Build();
 
 pub const ObjectiveID = re.sdk.ManagedObject;
@@ -685,6 +753,8 @@ pub const LevelFlowChangeRequest = interop.ManagedObjectTypeBuilder("app.LevelFl
 
 pub const GameObject = interop.ManagedObjectTypeBuilder("via.GameObject")
     .Method(.get_Name, interop.SystemStringView, null)
+    .Method(.get_Folder, re.sdk.ManagedObject, null)
+    .Method(.get_FolderSelf, re.sdk.ManagedObject, null)
     .Build();
 
 pub const LevelFlowEndType = enum(c_int) {

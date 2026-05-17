@@ -13,6 +13,7 @@ const windows = std.os.windows;
 const interop = re.interop;
 
 const SystemArray = managed_types.SystemArray;
+const SystemEventCallback = managed_types.SystemEventCallback;
 const PlayerContext = managed_types.PlayerContext;
 const ItemDetails = managed_types.ItemDetails;
 const PanelItemDetails = managed_types.PanelItemDetails;
@@ -46,6 +47,9 @@ const LFBTA_FSM_GameJumpAction_GameJumpData = managed_types.LFBTA_FSM_GameJumpAc
 const GameJumpFlowObject = managed_types.GameJumpFlowObject;
 const GameJumpData = managed_types.GameJumpData;
 
+const EnemyRoleAction = managed_types.EnemyRoleAction;
+const EnemySpawnParamDetails = managed_types.EnemySpawnParamDetails;
+
 const ItemManager = managed_types.ItemManager;
 const FileManager = managed_types.FileManager;
 const CharacterManager = managed_types.CharacterManager;
@@ -54,6 +58,8 @@ const ObjectiveManager = managed_types.ObjectiveManager;
 const SaveServiceManager = managed_types.SaveServiceManager;
 const SceneTransitionManager = managed_types.SceneTransitionManager;
 const LevelFlowManager = managed_types.LevelFlowManager;
+
+const ResolvedSceneManagerType = interop.ResolvedType("via.SceneManager");
 
 const GenericDictionary = managed_types.GenericDictionary;
 const ConcurrentCatalogDictionary = managed_types.ConcurrentCatalogDictionary;
@@ -110,12 +116,17 @@ pub const g = struct {
     pub var scene_transition_manager: SceneTransitionManager = undefined;
     pub var level_flow_manager: LevelFlowManager = undefined;
 
+    pub var scene_manager: *anyopaque = undefined;
+    pub var SceneManagerT: ResolvedSceneManagerType = undefined;
+
     pub var items: Items = undefined;
     pub var files: Files = undefined;
     pub var level_flow_managed_objects: LevelFlowManagedObjects = undefined;
     pub var btree_management: BehaviorTreeManagement = undefined;
     pub var item_pickups: ItemPickups = undefined;
     pub var player: ?Player = null;
+
+    pub var scene_enemy_management: SceneEnemyManagement = undefined;
 
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     var threaded: std.Io.Threaded = undefined;
@@ -130,6 +141,9 @@ pub const g = struct {
         files = .{ .arena = .init(allocator) };
         level_flow_managed_objects = .{ .arena = .init(allocator) };
         btree_management = .{ .arena = .init(allocator) };
+
+        SceneManagerT = try g.interop_cache.resolve(ResolvedSceneManagerType.fullTypeName(), g.tdb, .fo(g.sdk));
+        scene_enemy_management = .{ .arena = .init(allocator) };
 
         item_manager = try ItemManager.init(
             &g.interop_cache,
@@ -179,6 +193,8 @@ pub const g = struct {
             re.sdk.getManagedSingleton(.fo(g.sdk), LevelFlowManager.fullTypeName()) orelse
                 return error.LevelFlowManagerNotFound,
         );
+        scene_manager = re.sdk.getNativeSingleton(.fo(g.sdk), ResolvedSceneManagerType.fullTypeName()) orelse
+            return error.SceneManagerNotFound;
     }
 
     fn attach() void {
@@ -194,6 +210,10 @@ pub const g = struct {
         threaded.deinit();
         _ = debug_allocator.detectLeaks();
         _ = debug_allocator.deinit();
+    }
+
+    pub inline fn sceneManager(scope: *interop.Scope) ResolvedSceneManagerType.Instanced(?*anyopaque) {
+        return SceneManagerT.scoped(scope).instanced(g.scene_manager);
     }
 
     pub inline fn errorInSafeMode(cond: bool, err: anytype) !void {
@@ -690,8 +710,6 @@ pub const ItemPickups = struct {
             const entry = try self.map.getOrPutValue(arena, id, .empty);
             try entry.value_ptr.append(arena, .{ .pickup = pickup, .detail = detail });
         }
-
-        self.collection.clearRetainingCapacity();
     }
 
     fn reset(self: *ItemPickups) void {
@@ -1308,10 +1326,588 @@ pub const Player = struct {
     }
 };
 
+const enemy_type_name_map: std.StaticStringMap([:0]const u8) = .initComptime(.{
+    .{ "app.Cp_B000Context", "Zombie Male" },
+    .{ "app.Cp_B001Context", "Zombie Female" },
+    .{ "app.Cp_B003Context", "The Singer" },
+    .{ "app.Cp_B004Context", "Zombie Cleaner" },
+    .{ "app.Cp_B005Context", "Zombie Patient" },
+    .{ "app.Cp_B006Context", "Zombie Patient" },
+    .{ "app.Cp_B007Context", "Zombie Staff" },
+    .{ "app.Cp_B030Context", "Zombie Patient" },
+    .{ "app.Cp_B032Context", "The Chef" },
+    .{ "app.Cp_B050Context", "Zombie RC" },
+    .{ "app.Cp_B051Context", "Zombie RC Chainsaw" },
+    .{ "app.Cp_B052Context", "Blister Borne" },
+    .{ "app.Cp_B053Context", "Zombie RC Elite" },
+    .{ "app.Cp_B054Context", "Zombie RC" },
+    .{ "app.Cp_B060Context", "Zombie BSAA" },
+    .{ "app.Cp_B070Context", "Zombie ARK" },
+    .{ "app.Cp_B100Context", "The Chunk" },
+    .{ "app.Cp_B200Context", "Norman Cole" },
+    .{ "app.Cp_B600Context", "Licker Beta 2" },
+    .{ "app.Cp_B700Context", "Titan Spinner" },
+    .{ "app.Cp_B800Context", "The Girl" },
+    .{ "app.Cp_B802Context", "The Chef" },
+    .{ "app.Cp_B805Context", "The Girl" },
+    .{ "app.Cp_C200Context", "Garmr" },
+    .{ "app.Cp_C400Context", "Victor Gideon (Bike)" },
+    .{ "app.Cp_C500Context", "Tyrant T-501" },
+    .{ "app.Cp_C510Context", "Super Tyrant (T-501)" },
+    .{ "app.Cp_C600Context", "Elite Guard" },
+    .{ "app.Cp_C610Context", "The Commander" },
+    .{ "app.Cp_C700Context", "Minion Spinner" },
+    .{ "app.Cp_C800Context", "Plant 43 Minion" },
+    .{ "app.Cp_C900Context", "Plant 43" },
+    .{ "app.Cp_C901Context", "Plant 43 Minion" },
+    .{ "app.Cp_D000Context", "Children" },
+    .{ "app.Cp_D100Context", "Victor Gideon" },
+    .{ "app.Cp_D110Context", "Victor Gideon (Mutated)" },
+});
+fn getEnemyTypeName(type_def: re.sdk.TypeDefinition, max_hp: i32) [:0]const u8 {
+    const type_name = type_def.getFullNameAlloc(.fo(g.sdk), g.allocator) catch
+        return "Unknown";
+    defer g.allocator.free(type_name);
+    if (std.mem.eql(u8, type_name, "app.Cp_B802Context")) {
+        if (max_hp >= 1000000) {
+            return "The Girl";
+        }
+        return "The Chef";
+    }
+    if (std.mem.eql(u8, type_name, "app.Cp_C500Context") or
+        std.mem.eql(u8, type_name, "app.Cp_C510Context"))
+    {
+        if (max_hp >= 1000000) {
+            return "Tyrant T-501";
+        }
+        return "Super Tyrant (T-501)";
+    }
+    return enemy_type_name_map.get(type_name) orelse "Unknown";
+}
+
+fn getMemberCopyAndSet(
+    scope: *interop.Scope,
+    parent: re.sdk.ManagedObject,
+    comptime get_method: [:0]const u8,
+    comptime set_method: [:0]const u8,
+) !re.sdk.ManagedObject {
+    errdefer log.err("{s} failed", .{get_method});
+    const value = try scope.callMethod(parent, get_method, re.sdk.ManagedObject, .fo(g.sdk), .{});
+    const copied_value = try scope.callMethod(value, "MemberwiseClone()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+    copied_value.addRef(.fo(g.sdk));
+    errdefer {
+        log.err("{s} failed", .{set_method});
+        if (copied_value.getRefCount(.fo(g.sdk)) > 0)
+            copied_value.release(.fo(g.sdk));
+    }
+    try scope.callMethod(parent, set_method, void, .fo(g.sdk), .{copied_value});
+    return copied_value;
+}
+
+fn getFieldCopyAndSet(scope: *interop.Scope, parent: re.sdk.ManagedObject, comptime field: @EnumLiteral()) !re.sdk.ManagedObject {
+    const value = try scope.getField(parent, @tagName(field), re.sdk.ManagedObject, .fo(g.sdk));
+    const copied_value = try scope.callMethod(value, "MemberwiseClone()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+    copied_value.addRef(.fo(g.sdk));
+    errdefer {
+        log.err("set {s} failed", .{@tagName(field)});
+        if (copied_value.getRefCount(.fo(g.sdk)) > 0)
+            copied_value.release(.fo(g.sdk));
+    }
+    try scope.setField(parent, @tagName(field), .fo(g.sdk), copied_value);
+    return copied_value;
+}
+
+fn safeFreeManagedObject(obj: re.sdk.ManagedObject) void {
+    if (obj.getRefCount(.fo(g.sdk)) > 0)
+        obj.release(.fo(g.sdk));
+}
+
+pub const EnemySpawnParams = struct {
+    position: @Vector(3, f32),
+    role_actions: []EnemyRoleAction,
+    overrwrite_way_points: ?struct {
+        start: @Vector(3, f32),
+        end: @Vector(3, f32),
+    } = null,
+};
+
+pub const SceneEnemyManagement = struct {
+    enemies: std.ArrayList(EnemySpawnParamDetails) = .empty,
+    // TODO: re-instantiate the GameObject.. or find a better way to copy the object
+    spawned_enemies: std.ArrayList(struct {
+        copied_base: re.sdk.ManagedObject,
+        copied_spawn_data: re.sdk.ManagedObject,
+        copied_enemy_settings: re.sdk.ManagedObject,
+        copied_role_settings: re.sdk.ManagedObject,
+        copied_coord_data: re.sdk.ManagedObject,
+        copied_role_action_pool: re.sdk.ManagedObject,
+        copied_role_actions_list: re.sdk.ManagedObject,
+        copied_role_actions: []re.sdk.ManagedObject,
+        new_spawn_context_id: re.sdk.ManagedObject,
+    }) = .empty,
+    arena: std.heap.ArenaAllocator,
+    current_scene_name: ?[:0]const u8 = null,
+
+    spawn_queue: std.Deque(struct { EnemySpawnParamDetails, EnemySpawnParams }) = .empty,
+    mutex: std.Io.Mutex = .init,
+
+    fn update(self: *SceneEnemyManagement) !void {
+        self.reset();
+
+        log.debug("Updating SceneEnemyManagement", .{});
+        const arena = self.arena.allocator();
+
+        var scope = g.interop_cache.newScope(arena);
+        defer scope.deinit();
+
+        const SceneT = try g.interop_cache.resolve("via.Scene", g.tdb, .fo(g.sdk));
+
+        const scene_manager = g.SceneManagerT.scoped(&scope).instanced(g.scene_manager);
+        const current_scene = try scene_manager.call("get_CurrentScene", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        log.debug("Current scene: {*}", .{current_scene.raw});
+        const current_scene_name_sys_str = try SceneT.scoped(&scope).call(
+            current_scene,
+            "get_Name()",
+            interop.SystemStringView,
+            .fo(g.sdk),
+            .{},
+        );
+        self.current_scene_name = if (current_scene_name_sys_str.data.len > 0)
+            try std.unicode.utf16LeToUtf8AllocZ(arena, current_scene_name_sys_str.data)
+        else
+            null;
+
+        const enemy_spawn_param_base_type = re.sdk.typeof(.fo(g.sdk), "app.EnemySpawnParamBase") orelse
+            return error.EnemySpawnParamBaseNotFound;
+        const EnemySpawnParamBaseT = try g.interop_cache.resolve("app.EnemySpawnParamBase", g.tdb, .fo(g.sdk));
+        const CharacterContextT = try g.interop_cache.resolve("app.CharacterContext", g.tdb, .fo(g.sdk));
+
+        const components = try SceneT.scoped(&scope).call(
+            current_scene,
+            "findComponents(System.Type)",
+            interop.SystemArray,
+            .fo(g.sdk),
+            .{enemy_spawn_param_base_type},
+        );
+        const len = try components.getLength(&scope, .fo(g.sdk));
+
+        for (0..@intCast(len)) |i| {
+            const enemy_spawn_param_base = try (components.getValue(i, &scope, .fo(g.sdk))) orelse continue;
+            var type_def = enemy_spawn_param_base.getTypeDefinition(.fo(g.sdk)) orelse
+                return error.EnemySpawnParamBaseTypeNotFound;
+
+            const component: *interop.ViaComponent = @ptrCast(enemy_spawn_param_base.raw);
+            const owner = try GameObject.init(&g.interop_cache, .fo(g.sdk), component.getOwner());
+            const game_obj_name_sys_str = try owner.call(.get_Name, &scope, .fo(g.sdk), .{});
+            const game_obj_name = try std.unicode.utf16LeToUtf8AllocZ(arena, game_obj_name_sys_str.data);
+
+            const context_id = try EnemySpawnParamBaseT.scoped(&scope).call(
+                enemy_spawn_param_base,
+                "get_ManagedContextID()",
+                re.sdk.ManagedObject,
+                .fo(g.sdk),
+                .{},
+            );
+            var max_hp: i32 = 0;
+            const context_ref = try g.character_manager.call(.getContextRef, &scope, .fo(g.sdk), .{context_id});
+            if (context_ref) |context| {
+                type_def = context.getTypeDefinition(.fo(g.sdk)) orelse type_def;
+                const hit_point = try CharacterContextT.scoped(&scope).call(
+                    context,
+                    "get_HitPoint",
+                    re.sdk.ManagedObject,
+                    .fo(g.sdk),
+                    .{},
+                );
+                max_hp = try scope.callMethod(
+                    hit_point,
+                    "get_CurrentMaximumHitPoint()",
+                    i32,
+                    .fo(g.sdk),
+                    .{},
+                );
+            }
+
+            errdefer log.err("failed get_SpawnData", .{});
+            const spawn_data = try EnemySpawnParamBaseT.scoped(&scope).call(
+                enemy_spawn_param_base,
+                "get_SpawnData()",
+                re.sdk.ManagedObject,
+                .fo(g.sdk),
+                .{},
+            );
+            errdefer log.err("failed get_Position", .{});
+            var position: @Vector(3, f32) = try scope.callMethod(
+                spawn_data,
+                "get_Position()",
+                @Vector(3, f32),
+                .fo(g.sdk),
+                .{},
+            );
+
+            var role_actions: std.ArrayList(EnemyRoleAction) = .empty;
+            defer role_actions.deinit(arena);
+
+            errdefer log.err("failed get_EnemySettings", .{});
+            const enemy_settings = try EnemySpawnParamBaseT.scoped(&scope).call(
+                enemy_spawn_param_base,
+                "get_EnemySettings()",
+                re.sdk.ManagedObject,
+                .fo(g.sdk),
+                .{},
+            );
+            errdefer log.err("failed get_RoleSettings", .{});
+            const role_settings = try scope.callMethod(
+                enemy_settings,
+                "get_RoleSettings()",
+                re.sdk.ManagedObject,
+                .fo(g.sdk),
+                .{},
+            );
+            errdefer log.err("failed get_SpawnParamCoordData", .{});
+            const coord_data = try scope.callMethod(
+                role_settings,
+                "get_SpawnParamCoordData()",
+                re.sdk.ManagedObject,
+                .fo(g.sdk),
+                .{},
+            );
+            const coord_data_position = try scope.callMethod(
+                coord_data,
+                "get_Position()",
+                @Vector(3, f32),
+                .fo(g.sdk),
+                .{},
+            );
+            if (coord_data_position[0] != position[0] or
+                coord_data_position[1] != position[1] or
+                coord_data_position[2] != position[2])
+            {
+                log.warn("SpawnData has position: {} but saved cood Position: {}", .{ position, coord_data_position });
+                position = coord_data_position;
+            }
+            const role_action_pool = try scope.callMethod(
+                role_settings,
+                "get_ActionPool()",
+                re.sdk.ManagedObject,
+                .fo(g.sdk),
+                .{},
+            );
+            const role_actions_list = try scope.callMethod(
+                role_action_pool,
+                "get_RoleActions()",
+                re.sdk.ManagedObject,
+                .fo(g.sdk),
+                .{},
+            );
+            const role_actions_items = try scope.getField(
+                role_actions_list,
+                "_items",
+                SystemArray,
+                .fo(g.sdk),
+            );
+            const role_actions_len = try role_actions_items.getLength(&scope, .fo(g.sdk));
+            for (0..@intCast(role_actions_len)) |j| {
+                const role_action = (try role_actions_items.getValue(j, &scope, .fo(g.sdk))) orelse continue;
+                const resume_point = scope.getField(role_action, "_ResumePoint", @Vector(3, f32), .fo(g.sdk)) catch continue;
+                const resume_yaw = scope.getField(role_action, "_ResumeYaw", f32, .fo(g.sdk)) catch continue;
+                const return_point = scope.getField(role_action, "_ReturnPoint", @Vector(3, f32), .fo(g.sdk)) catch continue;
+                const return_yaw = scope.getField(role_action, "_ReturnYaw", f32, .fo(g.sdk)) catch continue;
+
+                try role_actions.append(arena, .{
+                    .index = j,
+                    .resume_point = resume_point,
+                    .resume_yaw = resume_yaw,
+                    .return_point = return_point,
+                    .return_yaw = return_yaw,
+                });
+            }
+
+            try self.enemies.append(arena, .{
+                .enemy_type_name = getEnemyTypeName(type_def, max_hp),
+                .game_obj_name = game_obj_name,
+                .base = enemy_spawn_param_base,
+                .position = position,
+                .role_actions = try role_actions.toOwnedSlice(arena),
+            });
+        }
+        log.info("Found {} EnemyParamSpawns", .{self.enemies.items.len});
+    }
+
+    fn spawn(self: *SceneEnemyManagement, scope: *interop.Scope, enemy: EnemySpawnParamDetails, params: EnemySpawnParams) !void {
+        const arena = self.arena.allocator();
+
+        // const SceneT = try g.interop_cache.resolve("via.Scene", g.tdb, .fo(g.sdk));
+        // const FolderT = try g.interop_cache.resolve("via.Folder", g.tdb, .fo(g.sdk));
+        const EnemySpawnParamBaseT = try g.interop_cache.resolve("app.EnemySpawnParamBase", g.tdb, .fo(g.sdk));
+        const ContextIDT = try g.interop_cache.resolve("app.ContextID", g.tdb, .fo(g.sdk));
+        const SystemGuidT = try g.interop_cache.resolve("System.Guid", g.tdb, .fo(g.sdk));
+
+        const orig = enemy.base;
+
+        const new_spawn_id = try SystemGuidT.scoped(scope).callStaticMethod(
+            "NewGuid()",
+            interop.ValueType,
+            .fo(g.sdk),
+            .{},
+        );
+        const new_spawn_context_id = ContextIDT.type_def_metadata.def.createInstance(.fo(g.sdk), .simplify) orelse
+            return error.ContextIDCreationFailed;
+        new_spawn_context_id.addRef(.fo(g.sdk));
+        try ContextIDT.scoped(scope).call(
+            new_spawn_context_id,
+            ".ctor(System.Guid)",
+            void,
+            .fo(g.sdk),
+            .{new_spawn_id},
+        );
+
+        const copy = try EnemySpawnParamBaseT.scoped(scope).call(
+            orig,
+            "MemberwiseClone()",
+            re.sdk.ManagedObject,
+            .fo(g.sdk),
+            .{},
+        );
+        copy.addRef(.fo(g.sdk));
+        // this Id what's lets us spawn multiple enemies with the same spawn params...
+        try EnemySpawnParamBaseT.scoped(scope).set(copy, ._SpawnID, .fo(g.sdk), new_spawn_id);
+
+        const spawn_data_orig = try EnemySpawnParamBaseT.scoped(scope).call(
+            copy,
+            "get_SpawnData()",
+            re.sdk.ManagedObject,
+            .fo(g.sdk),
+            .{},
+        );
+        const copied_spawn_data = try scope.callMethod(
+            spawn_data_orig,
+            "MemberwiseClone()",
+            re.sdk.ManagedObject,
+            .fo(g.sdk),
+            .{},
+        );
+        copied_spawn_data.addRef(.fo(g.sdk));
+        errdefer {
+            log.err("set_SpawnData failed", .{});
+            copied_spawn_data.release(.fo(g.sdk));
+        }
+        try EnemySpawnParamBaseT.scoped(scope).call(
+            copy,
+            "set_SpawnData(app.CharacterSpawnData)",
+            void,
+            .fo(g.sdk),
+            .{copied_spawn_data},
+        );
+        try scope.callMethod(
+            copied_spawn_data,
+            "set_ContextID(app.ContextID)",
+            void,
+            .fo(g.sdk),
+            .{new_spawn_context_id},
+        );
+        try scope.callMethod(
+            copied_spawn_data,
+            "set_Position(via.vec3)",
+            void,
+            .fo(g.sdk),
+            .{params.position},
+        );
+        try EnemySpawnParamBaseT.scoped(scope).call(
+            copy,
+            "set_SpawnContextID(app.ContextID)",
+            void,
+            .fo(g.sdk),
+            .{new_spawn_context_id},
+        );
+
+        const copied_enemy_settings = try getFieldCopyAndSet(
+            scope,
+            copied_spawn_data,
+            ._EnemySettings,
+        );
+        log.debug("copied_enemy_settings: {*}", .{copied_enemy_settings.raw});
+        const copied_role_settings = try getFieldCopyAndSet(
+            scope,
+            copied_enemy_settings,
+            ._RoleSettings,
+        );
+        log.debug("copied_role_settings: {*}", .{copied_role_settings.raw});
+        const copied_coord_data = try getMemberCopyAndSet(
+            scope,
+            copied_role_settings,
+            "get_SpawnParamCoordData()",
+            "set_SpawnParamCoordData",
+        );
+        try scope.callMethod(
+            copied_coord_data,
+            "set_Position(via.vec3)",
+            void,
+            .fo(g.sdk),
+            .{params.position},
+        );
+        log.debug("copied_coord_data: {*}", .{copied_coord_data.raw});
+
+        const copied_role_action_pool = try getFieldCopyAndSet(
+            scope,
+            copied_role_settings,
+            ._ActionPool,
+        );
+        log.debug("copied_role_action_pool: {*}", .{copied_role_action_pool.raw});
+
+        const role_actions_list = try scope.callMethod(
+            copied_role_action_pool,
+            "get_RoleActions()",
+            re.sdk.ManagedObject,
+            .fo(g.sdk),
+            .{},
+        );
+        const role_actions_orig = try scope.getField(
+            role_actions_list,
+            "_items",
+            interop.SystemArray,
+            .fo(g.sdk),
+        );
+        const role_actions_type_def = role_actions_list.getTypeDefinition(.fo(g.sdk)) orelse
+            return error.RoleActionsTypeDefNotFound;
+        const copied_role_actions_list = role_actions_type_def.createInstance(.fo(g.sdk), .simplify) orelse
+            return error.FailedToCreateRoleActions;
+        copied_role_actions_list.addRef(.fo(g.sdk));
+        try scope.callMethod(
+            copied_role_action_pool,
+            "set_RoleActions",
+            void,
+            .fo(g.sdk),
+            .{copied_role_actions_list},
+        );
+        log.debug("copied_role_actions_list: {*}", .{copied_role_actions_list.raw});
+        errdefer {
+            if (copied_role_actions_list.getRefCount(.fo(g.sdk)) > 0)
+                copied_role_actions_list.release(.fo(g.sdk));
+        }
+        try scope.callMethod(copied_role_actions_list, ".ctor()", void, .fo(g.sdk), .{});
+        const role_actions_len = try role_actions_orig.getLength(scope, .fo(g.sdk));
+        var copied_role_actions: std.ArrayList(re.sdk.ManagedObject) = .empty;
+        defer copied_role_actions.deinit(arena);
+        for (0..@intCast(role_actions_len)) |i| {
+            const role_action_orig = (try role_actions_orig.getValue(i, scope, .fo(g.sdk))) orelse continue;
+            const copied_role_action = try scope.callMethod(
+                role_action_orig,
+                "MemberwiseClone()",
+                re.sdk.ManagedObject,
+                .fo(g.sdk),
+                .{},
+            );
+            copied_role_action.addRef(.fo(g.sdk));
+            errdefer {
+                log.err("[{}] Add failed", .{i});
+                if (copied_role_action.getRefCount(.fo(g.sdk)) > 0)
+                    copied_role_action.release(.fo(g.sdk));
+            }
+            try scope.callMethod(copied_role_actions_list, "Add", void, .fo(g.sdk), .{copied_role_action});
+
+            for (params.role_actions) |param_role_action| {
+                if (param_role_action.index != i) continue;
+                try scope.setField(copied_role_action, "_ResumePoint", .fo(g.sdk), param_role_action.resume_point);
+                try scope.setField(copied_role_action, "_ResumeYaw", .fo(g.sdk), param_role_action.resume_yaw);
+                try scope.setField(copied_role_action, "_ReturnPoint", .fo(g.sdk), param_role_action.return_point);
+                try scope.setField(copied_role_action, "_ReturnYaw", .fo(g.sdk), param_role_action.return_yaw);
+            }
+
+            try copied_role_actions.append(arena, copied_role_action);
+        }
+
+        // try EnemySpawnParamBaseT.scoped(scope).call(
+        //     copy,
+        //     "setupSpawnData(app.CharacterSpawnData)",
+        //     void,
+        //     .fo(g.sdk),
+        //     .{copied_spawn_data},
+        // );
+        // this and on the spawn data needs to be set
+        try EnemySpawnParamBaseT.scoped(scope).set(
+            copy,
+            ._EnemySettings,
+            .fo(g.sdk),
+            copied_enemy_settings,
+        );
+        // this creates a new CharacterContext
+        try EnemySpawnParamBaseT.scoped(scope).call(copy, "awake()", void, .fo(g.sdk), .{});
+
+        errdefer log.err("requestSpawn failed", .{});
+        //try EnemySpawnParamBaseT.scoped(scope).call(copy, "requestSpawn()", void, .fo(g.sdk), .{});
+        try EnemySpawnParamBaseT.scoped(scope).call(copy, "requestRestoreSpawn()", void, .fo(g.sdk), .{});
+        try EnemySpawnParamBaseT.scoped(scope).call(copy, "readySpawn(System.Boolean)", void, .fo(g.sdk), .{true});
+        try EnemySpawnParamBaseT.scoped(scope).call(copy, "permitSpawn(System.Boolean)", void, .fo(g.sdk), .{true});
+
+        try self.spawned_enemies.append(arena, .{
+            .copied_base = copy,
+            .copied_spawn_data = copied_spawn_data,
+            .copied_enemy_settings = copied_enemy_settings,
+            .copied_role_settings = copied_role_settings,
+            .copied_coord_data = copied_coord_data,
+            .copied_role_action_pool = copied_role_action_pool,
+            .copied_role_actions_list = copied_role_actions_list,
+            .copied_role_actions = try copied_role_actions.toOwnedSlice(arena),
+            .new_spawn_context_id = new_spawn_context_id,
+        });
+
+        log.info("spawned enemy: {*}, base: {*}", .{ copy.raw, enemy.base.raw });
+    }
+
+    pub fn queueSpawn(self: *SceneEnemyManagement, enemy: EnemySpawnParamDetails, params: EnemySpawnParams) !void {
+        try self.mutex.lock(g.io);
+        defer self.mutex.unlock(g.io);
+
+        const arena = self.arena.allocator();
+        try self.spawn_queue.pushBack(arena, .{ enemy, params });
+    }
+
+    fn spawnNext(self: *SceneEnemyManagement) !void {
+        try self.mutex.lock(g.io);
+        defer self.mutex.unlock(g.io);
+
+        if (self.spawn_queue.popFront()) |item| {
+            var scope = g.interop_cache.newScope(self.arena.allocator());
+            defer scope.deinit();
+
+            const enemy = item.@"0";
+            const params = item.@"1";
+            try self.spawn(&scope, enemy, params);
+        }
+    }
+
+    fn reset(self: *SceneEnemyManagement) void {
+        for (self.spawned_enemies.items) |enemy| {
+            safeFreeManagedObject(enemy.copied_base);
+            safeFreeManagedObject(enemy.copied_spawn_data);
+            safeFreeManagedObject(enemy.copied_enemy_settings);
+            safeFreeManagedObject(enemy.copied_role_settings);
+            safeFreeManagedObject(enemy.copied_coord_data);
+            safeFreeManagedObject(enemy.copied_role_action_pool);
+            safeFreeManagedObject(enemy.copied_role_actions_list);
+            for (enemy.copied_role_actions) |action| {
+                safeFreeManagedObject(action);
+            }
+            safeFreeManagedObject(enemy.new_spawn_context_id);
+        }
+        _ = self.arena.reset(.retain_capacity);
+        self.enemies = .empty;
+        self.spawned_enemies = .empty;
+        self.current_scene_name = null;
+
+        self.mutex.lockUncancelable(g.io);
+        self.mutex.unlock(g.io);
+        self.spawn_queue = .empty;
+    }
+};
+
 // mainly map/populate collections which changes per-level wise here
 pub fn new() !void {
     g.interop_cache.resetDiagnostics();
     defer g.interop_cache.resetDiagnostics();
+
+    try g.scene_enemy_management.update();
 
     // we first need to make sure the player is initialized, this will ensure that per-level collections are set
     g.player = try .init();
@@ -1383,41 +1979,7 @@ pub fn new() !void {
     try g.player.?.checkGameJumps(flows);
 }
 
-fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?*interop.MethodMetadata {
-    const type_def = tdb.findType(.fo(g.sdk), type_name) orelse return null;
-    const metadata = try g.interop_cache.getOrCacheMethodMetadata(.fo(g.sdk), type_def, method_sig);
-    return metadata;
-}
-
-// we populate the lists/maps when we need to collect them from a singleton
-fn onStart() !void {
-    g.api.lockLua();
-    defer g.api.unlockLua();
-
-    log.debug("Repopulating items...", .{});
-    try g.items.repopulate();
-    log.info("Collected items: {}", .{g.items.items_cache.count()});
-
-    log.debug("Repopulating files...", .{});
-    try g.files.repopulate();
-    log.info("Collected files: {}", .{g.files.filesSlice().len});
-}
-
-fn onPlayerInitialized() !void {
-    g.api.lockLua();
-    defer g.api.unlockLua();
-
-    log.debug("Player Initialized new...", .{});
-
-    try new();
-}
-
-fn onNewSceneRequest() void {
-    g.api.lockLua();
-    defer g.api.unlockLua();
-
-    log.debug("NewScene Requested resetting...", .{});
-
+pub fn reset() void {
     g.items.reset();
     g.item_pickups.reset();
     g.files.reset();
@@ -1430,6 +1992,48 @@ fn onNewSceneRequest() void {
     player.deinit();
 
     g.player = null;
+}
+
+// we populate the lists/maps when we need to collect them from a singleton
+pub fn staticNew() !void {
+    log.debug("Repopulating items...", .{});
+    try g.items.repopulate();
+    log.info("Collected items: {}", .{g.items.items_cache.count()});
+
+    log.debug("Repopulating files...", .{});
+    try g.files.repopulate();
+    log.info("Collected files: {}", .{g.files.filesSlice().len});
+}
+
+fn tdbGetMethod(tdb: re.sdk.Tdb, comptime type_name: [:0]const u8, comptime method_sig: [:0]const u8) !?*interop.MethodMetadata {
+    const type_def = tdb.findType(.fo(g.sdk), type_name) orelse return null;
+    const metadata = try g.interop_cache.getOrCacheMethodMetadata(.fo(g.sdk), type_def, method_sig);
+    return metadata;
+}
+
+fn onStart() !void {
+    g.api.lockLua();
+    defer g.api.unlockLua();
+
+    try staticNew();
+}
+
+fn onMainGameSwitchScene() !void {
+    g.api.lockLua();
+    defer g.api.unlockLua();
+
+    log.debug("Player initializing...", .{});
+
+    try new();
+}
+
+fn onNewSceneRequest() void {
+    g.api.lockLua();
+    defer g.api.unlockLua();
+
+    log.debug("NewScene Requested resetting...", .{});
+
+    reset();
 }
 
 fn onPlayerItemChange() !void {
@@ -1446,6 +2050,320 @@ fn onChangeObjective() !void {
 
     const player = &(g.player orelse return);
     try player.checkObjectives();
+}
+
+pub fn test1() !void {
+    if (g.scene_enemy_management.enemies.items.len == 0) {
+        log.info("No enemies to found", .{});
+        return;
+    }
+
+    if (g.scene_enemy_management.current_scene_name) |name| {
+        log.info("Current scene: {s}", .{name});
+    }
+
+    var scope = g.interop_cache.newScope(g.allocator);
+    defer scope.deinit();
+
+    const enemy = g.scene_enemy_management.enemies.items[0];
+    log.info("Spawning enemy: {s}", .{enemy.enemy_type_name});
+    var role_actions = [_]EnemyRoleAction{
+        .{
+            .index = 0,
+            .resume_point = .{ 4.184, 2.277, 37.947 },
+            .resume_yaw = -90.0,
+            .return_point = .{ -2.417, 2.277, 36.349 },
+            .return_yaw = -270.0,
+        },
+        .{
+            .index = 1,
+            .resume_point = .{ 4.184, 2.277, 37.947 },
+            .resume_yaw = -90.0,
+            .return_point = .{ -2.417, 2.277, 36.349 },
+            .return_yaw = -270.0,
+        },
+    };
+    try g.scene_enemy_management.spawn(&scope, enemy, .{
+        .position = .{ 4.184, 2.277, 37.947 },
+        .role_actions = &role_actions,
+    });
+}
+
+pub fn test2() !void {
+    var scope = g.interop_cache.newScope(g.allocator);
+    defer scope.deinit();
+    const arena = scope.arena.allocator();
+    // const CharacterKindIDT = try g.interop_cache.resolve("app.CharacterKindID", g.tdb, .fo(g.sdk));
+    // const character_kind_id = try CharacterKindIDT.scoped(&scope).getStatic(.cp_B002, re.sdk.ManagedObject, .fo(g.sdk));
+    // const char_context_func = try g.character_manager.call(.getCharacterContextFactory, &scope, .fo(g.sdk), .{character_kind_id});
+    // const char_context = try scope.callMethod(char_context_func, "Invoke", re.sdk.ManagedObject, .fo(g.sdk), .{});
+    // char_context.addRef(.fo(g.sdk));
+    // const type_def = char_context.getTypeDefinition(.fo(g.sdk)) orelse return error.TypeDefinitionNotFound;
+    // const type_name = try type_def.getFullNameAlloc(.fo(g.sdk), arena);
+    // log.debug("Found char_context: 0x{x} ({s})", .{ @intFromPtr(char_context.raw), type_name });
+
+    const SceneManagerT = try g.interop_cache.resolve("via.SceneManager", g.tdb, .fo(g.sdk));
+    const SceneT = try g.interop_cache.resolve("via.Scene", g.tdb, .fo(g.sdk));
+    const FolderT = try g.interop_cache.resolve("via.Folder", g.tdb, .fo(g.sdk));
+    // const PrefabT = try g.interop_cache.resolve("via.Prefab", g.tdb, .fo(g.sdk));
+    const ContextIDT = try g.interop_cache.resolve("app.ContextID", g.tdb, .fo(g.sdk));
+    const SystemGuidT = try g.interop_cache.resolve("System.Guid", g.tdb, .fo(g.sdk));
+    // const GameObjectT = try g.interop_cache.resolve("via.GameObject", g.tdb, .fo(g.sdk));
+
+    // const resource_mgr = re.sdk.getResourceManager(.fo(g.sdk)) orelse return error.ResourceManagerNotFound;
+    // const resource = resource_mgr.createResource(.fo(g.sdk), "via.Prefab", "natives/stm/GameAssets/Character/Spawn/cp_B000SpawnParam.pfb") orelse return error.ResourceCreationFailed;
+    // resource.addRef(.fo(g.sdk));
+    // log.debug("Found resource: 0x{x}", .{@intFromPtr(resource.raw)});
+
+    const scene_manager = re.sdk.getNativeSingleton(.fo(g.sdk), "via.SceneManager") orelse return error.SceneManagerNotFound;
+    const type_name = try SceneManagerT.type_def_metadata.def.getFullNameAlloc(.fo(g.sdk), arena);
+    log.debug("Found scene_manager: 0x{x} ({s})", .{ @intFromPtr(scene_manager), type_name });
+
+    const current_scene = try SceneManagerT
+        .scoped(&scope)
+        .call(scene_manager, "get_CurrentScene", re.sdk.ManagedObject, .fo(g.sdk), .{});
+    log.debug("Found current_scene: 0x{x}", .{@intFromPtr(current_scene.raw)});
+
+    const enemy_spawn_base_param_type = re.sdk.typeof(.fo(g.sdk), "app.EnemySpawnParamBase") orelse return error.EnemySpawnParamBaseNotFound;
+    const enemy_base_components = try SceneT
+        .scoped(&scope)
+        .call(current_scene, "findComponents(System.Type)", interop.SystemArray, .fo(g.sdk), .{enemy_spawn_base_param_type});
+    const len = try enemy_base_components.getLength(&scope, .fo(g.sdk));
+    log.debug("Found enemy_base_components: 0x{x}, {}", .{ @intFromPtr(enemy_base_components.instance.managed.raw), len });
+
+    // const player_pos = try g.player.?.player_context.call(.get_Position, &scope, .fo(g.sdk), .{});
+    // log.debug("Found player_pos: {}", .{player_pos});
+
+    const new_spawn_id = try SystemGuidT.scoped(&scope).callStaticMethod(
+        "NewGuid()",
+        interop.ValueType,
+        .fo(g.sdk),
+        .{},
+    );
+    log.debug("\nnew_spawn_guid: {any}", .{new_spawn_id.data[0x10..]});
+
+    const new_spawn_context_id = ContextIDT.type_def_metadata.def.createInstance(.fo(g.sdk), .simplify) orelse return error.ContextIDCreationFailed;
+    new_spawn_context_id.addRef(.fo(g.sdk));
+    try ContextIDT.scoped(&scope).call(new_spawn_context_id, ".ctor(System.Guid)", void, .fo(g.sdk), .{new_spawn_id});
+    new_spawn_context_id.addRef(.fo(g.sdk));
+    log.debug("Created new_managed_context_id: 0x{x}", .{@intFromPtr(new_spawn_context_id.raw)});
+
+    for (0..@intCast(len)) |i| {
+        const enemy_spawn_param_base_orig = (try enemy_base_components.getValue(i, &scope, .fo(g.sdk))) orelse continue;
+        const enemy_spawn_param_base = try scope.callMethod(enemy_spawn_param_base_orig, "MemberwiseClone()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        enemy_spawn_param_base.addRef(.fo(g.sdk));
+
+        const orig_spawn_id = try scope.callMethod(enemy_spawn_param_base, "get_SpawnID()", interop.ValueType, .fo(g.sdk), .{});
+        log.debug("orig_spawn_id: {any}", .{orig_spawn_id.data});
+
+        try scope.setField(enemy_spawn_param_base, "_SpawnID", .fo(g.sdk), new_spawn_id);
+        const spawn_id = try scope.callMethod(enemy_spawn_param_base, "get_SpawnID()", interop.ValueType, .fo(g.sdk), .{});
+        log.debug("spawn_id: {any}", .{spawn_id.data});
+
+        const component: *interop.ViaComponent = @ptrCast(enemy_spawn_param_base.raw);
+
+        const game_obj = try GameObject.init(&g.interop_cache, .fo(g.sdk), component.getOwner());
+        log.debug("owner: 0x{x}", .{@intFromPtr(game_obj.managed.raw)});
+        // component.setOwner(null);
+
+        const game_obj_name_sys_str = try game_obj.call(.get_Name, &scope, .fo(g.sdk), .{});
+        const game_obj_name = try std.unicode.utf16LeToUtf8AllocZ(arena, game_obj_name_sys_str.data);
+
+        const folder = try game_obj.call(.get_FolderSelf, &scope, .fo(g.sdk), .{});
+        const folder_path_str = try FolderT.scoped(&scope).call(folder, "get_Path()", interop.SystemStringView, .fo(g.sdk), .{});
+        const folder_path = try std.unicode.utf16LeToUtf8AllocZ(arena, folder_path_str.data);
+
+        const context_id = try scope.callMethod(
+            enemy_spawn_param_base_orig,
+            "get_ManagedContextID()",
+            re.sdk.ManagedObject,
+            .fo(g.sdk),
+            .{},
+        );
+        const context_ref = try g.character_manager.call(.getContextRef, &scope, .fo(g.sdk), .{context_id});
+        if (context_ref) |context| {
+            const type_def = context.getTypeDefinition(.fo(g.sdk)) orelse continue;
+            const hit_point = try scope.callMethod(
+                context,
+                "get_HitPoint",
+                re.sdk.ManagedObject,
+                .fo(g.sdk),
+                .{},
+            );
+            const max_hp = try scope.callMethod(
+                hit_point,
+                "get_CurrentMaximumHitPoint()",
+                i32,
+                .fo(g.sdk),
+                .{},
+            );
+            const name = getEnemyTypeName(type_def, max_hp);
+            if (std.ascii.findIgnoreCase(name, "Cleaner") == null) {
+                continue;
+            }
+            log.debug("===test2===Spawning enemy: {s}", .{name});
+        } else {
+            continue;
+        }
+
+        // const game_obj_new = try GameObjectT.scoped(&scope).callStaticMethod(
+        //     "create(System.String, via.Folder)",
+        //     re.sdk.ManagedObject,
+        //     .fo(g.sdk),
+        //     .{ game_obj_name, folder },
+        // );
+        // game_obj_new.addRef(.fo(g.sdk));
+        // component.setOwner(game_obj_new);
+        // log.debug("created game object: 0x{x}", .{@intFromPtr(game_obj_new.raw)});
+        // const typedef = enemy_spawn_param_base.getTypeDefinition(.fo(g.sdk)) orelse return error.TypeDefinitionNotFound;
+        // const enemy_spawn_param_base_runtime_type = typedef.getRuntimeType(.fo(g.sdk)) orelse return error.RuntimeTypeNotFound;
+
+        const spawn_data_orig = try scope.callMethod(enemy_spawn_param_base, "get_SpawnData()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        const spawn_data = try scope.callMethod(spawn_data_orig, "MemberwiseClone()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        spawn_data.addRef(.fo(g.sdk));
+
+        try scope.callMethod(
+            spawn_data,
+            "set_ContextID(app.ContextID)",
+            void,
+            .fo(g.sdk),
+            .{new_spawn_context_id},
+        );
+
+        log.debug("cloned spawn data and updated context id", .{});
+
+        // enemy_spawn_param_base = try GameObjectT.scoped(&scope).call(game_obj_new, "createComponent(System.Type)", re.sdk.ManagedObject, .fo(g.sdk), .{enemy_spawn_param_base_runtime_type});
+
+        try scope.callMethod(
+            enemy_spawn_param_base,
+            "setupSpawnData(app.CharacterSpawnData)",
+            void,
+            .fo(g.sdk),
+            .{spawn_data},
+        );
+
+        log.debug("setup new spawn data", .{});
+
+        // const sd_context_id = try scope.callMethod(spawn_data, "get_ContextID()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        // const spawn_data_ref_opt = try g.character_manager.call(.getSpawnDataRef, &scope, .fo(g.sdk), .{sd_context_id});
+        // if (spawn_data_ref_opt != null) continue;
+        try scope.callMethod(
+            enemy_spawn_param_base,
+            "set_SpawnContextID(app.ContextID)",
+            void,
+            .fo(g.sdk),
+            .{new_spawn_context_id},
+        );
+
+        const managed_context_id = try scope.callMethod(enemy_spawn_param_base, "get_ManagedContextID()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        const is_used = try g.character_manager.call(.isUsedContext, &scope, .fo(g.sdk), .{managed_context_id});
+        log.debug(
+            "[{}] folder: 0x{x}({s}):\n  enemy_base_component: 0x{x}, name: {s}, is_used: {}, context_id: {*}",
+            .{
+                i,
+                @intFromPtr(folder.raw),
+                folder_path,
+                @intFromPtr(component),
+                game_obj_name,
+                is_used,
+                managed_context_id.raw,
+            },
+        );
+
+        const spawn_pos = try scope.callMethod(
+            spawn_data,
+            "get_Position()",
+            @Vector(3, f32),
+            .fo(g.sdk),
+            .{},
+        );
+        log.debug("spawn_pos: {}", .{spawn_pos});
+
+        try scope.callMethod(
+            spawn_data,
+            "set_Position(via.vec3)",
+            void,
+            .fo(g.sdk),
+            .{@Vector(3, f32){ 4.184, 2.277, 37.947 }},
+        );
+
+        const new_spawn_pos = try scope.callMethod(
+            spawn_data,
+            "get_Position()",
+            @Vector(3, f32),
+            .fo(g.sdk),
+            .{},
+        );
+        log.debug("new_spawn_pos: {}", .{new_spawn_pos});
+
+        try scope.callMethod(
+            enemy_spawn_param_base,
+            "awake()",
+            void,
+            .fo(g.sdk),
+            .{},
+        );
+
+        log.debug("awoken enemy_spawn_param_base", .{});
+        const managed_context_id_after = try scope.callMethod(enemy_spawn_param_base, "get_ManagedContextID()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        const is_used_after = try g.character_manager.call(.isUsedContext, &scope, .fo(g.sdk), .{managed_context_id});
+        log.debug("managed_context_id_after: {*}, is_used_after: {}", .{ managed_context_id_after.raw, is_used_after });
+
+        const montage_id = try scope.callMethod(enemy_spawn_param_base, "get_ManagedMontageID()", interop.ValueType, .fo(g.sdk), .{});
+        log.debug("montage_id_type_def: 0x{x}", .{@intFromPtr(montage_id.type_def.raw)});
+
+        const enemy_settings = try scope.callMethod(enemy_spawn_param_base, "get_EnemySettings()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        const orig_enemy_settings = try scope.callMethod(enemy_spawn_param_base_orig, "get_EnemySettings()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        log.debug("enemy_settings: {*} orig_enemy_settings: {*}", .{ enemy_settings.raw, orig_enemy_settings.raw });
+        const role_settings = try scope.callMethod(enemy_settings, "get_RoleSettings()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        log.debug("role_settings: {*}", .{role_settings.raw});
+
+        // get_SpawnParamCoordData()
+        const coord_data = try scope.callMethod(role_settings, "get_SpawnParamCoordData()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        log.debug("coord_data: {*}", .{coord_data.raw});
+        try scope.callMethod(coord_data, "set_Position(via.vec3)", void, .fo(g.sdk), .{@Vector(3, f32){ 4.184, 2.277, 37.947 }});
+
+        const role_action_pool = try scope.callMethod(role_settings, "get_ActionPool()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        log.debug("role_action_pool: {*}", .{role_action_pool.raw});
+        const role_actions = try scope.callMethod(role_action_pool, "get_RoleActions()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        log.debug("role_actions: {*}", .{role_actions.raw});
+        const role_actions_items = try scope.getField(role_actions, "_items", interop.SystemArray, .fo(g.sdk));
+
+        const role_actions_len = try role_actions_items.getLength(&scope, .fo(g.sdk));
+        log.debug("role_actions_len: {}", .{role_actions_len});
+
+        for (0..@intCast(role_actions_len)) |role_action_idx| {
+            const role_action = try role_actions_items.getValue(role_action_idx, &scope, .fo(g.sdk)) orelse continue;
+            log.debug("role_action: {*}", .{role_action.raw});
+            try scope.setField(role_action, "_ResumePoint", .fo(g.sdk), @Vector(3, f32){ 4.184, 2.277, 37.947 });
+            try scope.setField(role_action, "_ResumeYaw", .fo(g.sdk), -90.0);
+            try scope.setField(role_action, "_ReturnPoint", .fo(g.sdk), @Vector(3, f32){ -2.417, 2.277, 36.349 });
+            try scope.setField(role_action, "_ReturnYaw", .fo(g.sdk), -270.0);
+        }
+
+        //try scope.callMethod(enemy_spawn_param_base, "requestSpawn()", void, .fo(g.sdk), .{});
+        try scope.callMethod(enemy_spawn_param_base, "requestRestoreSpawn()", void, .fo(g.sdk), .{});
+        try scope.callMethod(enemy_spawn_param_base, "readySpawn(System.Boolean)", void, .fo(g.sdk), .{true});
+        try scope.callMethod(enemy_spawn_param_base, "permitSpawn(System.Boolean)", void, .fo(g.sdk), .{true});
+
+        // try g.character_manager.call(.requestSpawn, &scope, .fo(g.sdk), .{
+        //     managed_context_id,
+        //     character_kind_id,
+        //     montage_id,
+        //     1,
+        //     true,
+        //     managed_types.CharacterUsePurposeFlag.default,
+        // });
+
+        const character_kind_id = try scope.callMethod(enemy_spawn_param_base, "get_ManagedCharacterKindID()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        log.debug("spawned character_kind_id: 0x{x}", .{@intFromPtr(character_kind_id.raw)});
+
+        break;
+    }
+    // const folders = try SceneT
+    //     .scoped(&scope)
+    //     .call(current_scene, "findFolder", re.sdk.ManagedObject, .fo(g.sdk), .{@as([:0]const u8, "")});
+    // log.debug("Found folders: 0x{x}", .{@intFromPtr(folders.raw)});
 }
 
 fn installHooks() !void {
@@ -1526,6 +2444,9 @@ fn installHooks() !void {
             fn func(_: ?[]?*anyopaque, _: ?[]re.sdk.TypeDefinition, _: u64) re.api.HookCall {
                 g.btree_management.performSingleAction() catch |e| {
                     log.err("Failed to perform behavior tree action: {}", .{e});
+                };
+                g.scene_enemy_management.spawnNext() catch |e| {
+                    log.err("Failed to spawn next enemy: {}", .{e});
                 };
                 return .call_original;
             }
@@ -1678,45 +2599,6 @@ fn installHooks() !void {
         false,
     );
 
-    const CharacterManagerT = try CharacterManager.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
-    _ = CharacterManagerT.getMethod(.notifyPlayerInitialized).addHook(
-        .fo(g.sdk.safe().functions),
-        null,
-        struct {
-            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
-                onPlayerInitialized() catch |e| {
-                    log.err(
-                        "Error notifyPlayerInitialized: {}, context: {s}",
-                        .{ e, g.interop_cache.ownDiagnostics() catch "none" },
-                    );
-                };
-            }
-        }.func,
-        false,
-    );
-
-    _ = g.scene_transition_manager.runtime.getMethod(.requestMainGameJumpCore).addHook(
-        .fo(g.sdk.safe().functions),
-        null,
-        struct {
-            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
-                onNewSceneRequest();
-            }
-        }.func,
-        false,
-    );
-
-    _ = g.scene_transition_manager.runtime.getMethod(.requestTitleSceneJump).addHook(
-        .fo(g.sdk.safe().functions),
-        null,
-        struct {
-            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
-                onNewSceneRequest();
-            }
-        }.func,
-        false,
-    );
-
     // const PlayerContextT = try PlayerContext.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
     // _ = PlayerContextT.getMethod(.onUnlinked).addHook(
     //     .fo(g.sdk.safe().functions),
@@ -1739,6 +2621,75 @@ fn installHooks() !void {
                 onChangeObjective() catch |e| {
                     log.err("Error onChangeObjective: {}", .{e});
                 };
+            }
+        }.func,
+        false,
+    );
+
+    const CharacterManagerT = try CharacterManager.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
+    _ = CharacterManagerT.getMethod(.notifyPlayerInitialized).addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                onMainGameSwitchScene() catch |e| {
+                    log.err(
+                        "Error notifyPlayerInitialized: {}, context: {s}",
+                        .{ e, g.interop_cache.ownDiagnostics() catch "none" },
+                    );
+                };
+            }
+        }.func,
+        false,
+    );
+
+    const SystemEventCallbackT = try SystemEventCallback.Runtime.getWithTdb(&g.interop_cache, .fo(g.sdk), g.tdb);
+    _ = SystemEventCallbackT.getMethod(.onFinishTransitionForMainGame).addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                onMainGameSwitchScene() catch |e| {
+                    log.err(
+                        "Error onFinishTransitionForMainGame: {}, context: {s}",
+                        .{ e, g.interop_cache.ownDiagnostics() catch "none" },
+                    );
+                };
+            }
+        }.func,
+        false,
+    );
+    _ = SystemEventCallbackT.getMethod(.onSwitchedGameScene).addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                onMainGameSwitchScene() catch |e| {
+                    log.err(
+                        "Error onSwitchedGameScene: {}, context: {s}",
+                        .{ e, g.interop_cache.ownDiagnostics() catch "none" },
+                    );
+                };
+            }
+        }.func,
+        false,
+    );
+    _ = SystemEventCallbackT.getMethod(.onStartSceneTransition).addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                onNewSceneRequest();
+            }
+        }.func,
+        false,
+    );
+    _ = g.scene_transition_manager.runtime.getMethod(.requestMainGameJumpCore).addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                onNewSceneRequest();
             }
         }.func,
         false,
