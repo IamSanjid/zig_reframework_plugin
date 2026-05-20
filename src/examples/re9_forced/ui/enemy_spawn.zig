@@ -98,6 +98,13 @@ pub fn draw() !void {
                 current_position = enemy.position;
                 try current_role_actions.appendSlice(arena.allocator(), enemy.role_actions);
             }
+            if (current_role_actions.items.len < enemy.role_actions.len) {
+                const old_len = current_role_actions.items.len;
+                try current_role_actions.resize(arena.allocator(), enemy.role_actions.len);
+                for (old_len..enemy.role_actions.len) |i| {
+                    current_role_actions.items[i] = enemy.role_actions[i];
+                }
+            }
             if (last_player_pos) |pos| {
                 var local_pos = pos;
                 inputVec3F("Last Player Pos", &local_pos);
@@ -105,7 +112,8 @@ pub fn draw() !void {
             cimgui_dll.igSeparator();
             inputVec3F("Position", &current_position.?);
             cimgui_dll.igSeparatorText("Role Actions");
-            for (current_role_actions.items) |*action| {
+            for (0..enemy.role_actions.len) |action_idx| {
+                const action = &current_role_actions.items[action_idx];
                 const action_id = try std.fmt.bufPrintSentinel(&ui.label_buf, "enemy_spawn_action#{}", .{action.index}, 0);
                 cimgui_dll.igPushID_Str(action_id);
                 defer cimgui_dll.igPopID();

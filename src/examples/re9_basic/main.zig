@@ -35,7 +35,7 @@ const g = struct {
         interop_cache = .init(debug_allocator.allocator(), io);
     }
 
-    fn reset() void {
+    fn detach() void {
         interop_cache.deinit();
 
         threaded.deinit();
@@ -404,12 +404,6 @@ fn onUpdate() void {
     };
 }
 
-fn onDeviceReset() void {
-    log.info("Device reset detected, clearing interop cache", .{});
-
-    g.reset();
-}
-
 comptime {
     re.initPlugin(init, .{
         .requiredVersion = .{
@@ -418,7 +412,6 @@ comptime {
         .onPreApplicationEntry = &.{
             .{ "UpdateBehavior", onUpdate },
         },
-        .onDeviceReset = onDeviceReset,
         .onImGuiDrawUI = struct {
             fn func(data: *re.API_C.REFImGuiFrameCbData) void {
                 @setRuntimeSafety(false);
@@ -456,7 +449,7 @@ pub export fn DllMain(
             g.attach();
         },
         win32.system.system_services.DLL_PROCESS_DETACH => {
-            g.reset();
+            g.detach();
         },
         else => {},
     }

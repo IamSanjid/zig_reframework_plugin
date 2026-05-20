@@ -199,20 +199,22 @@ pub const g = struct {
 
     fn attach() void {
         threaded = .init(debug_allocator.allocator(), .{});
-        allocator = debug_allocator.allocator();
+        allocator = if (is_debug) debug_allocator.allocator() else std.heap.smp_allocator;
         io = threaded.io();
         interop_cache = .init(debug_allocator.allocator(), io);
     }
 
-    fn reset() void {
+    fn detach() void {
         interop_cache.deinit();
 
         threaded.deinit();
-        _ = debug_allocator.detectLeaks();
-        _ = debug_allocator.deinit();
+        if (is_debug) {
+            _ = debug_allocator.detectLeaks();
+            _ = debug_allocator.deinit();
+        }
     }
 
-    pub inline fn sceneManager(scope: *interop.Scope) ResolvedSceneManagerType.Instanced(?*anyopaque) {
+    pub inline fn sceneManager(scope: *interop.Scope) ResolvedSceneManagerType.Instanced(*anyopaque) {
         return SceneManagerT.scoped(scope).instanced(g.scene_manager);
     }
 
@@ -1328,6 +1330,7 @@ pub const Player = struct {
 
 const enemy_type_name_map: std.StaticStringMap([:0]const u8) = .initComptime(.{
     .{ "app.Cp_B000Context", "Zombie Male" },
+    .{ "app.Cp_B002Context", "The Chef" },
     .{ "app.Cp_B001Context", "Zombie Female" },
     .{ "app.Cp_B003Context", "The Singer" },
     .{ "app.Cp_B004Context", "Zombie Cleaner" },
@@ -1350,6 +1353,7 @@ const enemy_type_name_map: std.StaticStringMap([:0]const u8) = .initComptime(.{
     .{ "app.Cp_B800Context", "The Girl" },
     .{ "app.Cp_B802Context", "The Chef" },
     .{ "app.Cp_B805Context", "The Girl" },
+    .{ "app.Cp_C100Context", "The Chunk" },
     .{ "app.Cp_C200Context", "Garmr" },
     .{ "app.Cp_C400Context", "Victor Gideon (Bike)" },
     .{ "app.Cp_C500Context", "Tyrant T-501" },
@@ -1368,6 +1372,7 @@ fn getEnemyTypeName(type_def: re.sdk.TypeDefinition, max_hp: i32) [:0]const u8 {
     const type_name = type_def.getFullNameAlloc(.fo(g.sdk), g.allocator) catch
         return "Unknown";
     defer g.allocator.free(type_name);
+    log.debug("type_name: {s}, max_hp: {}", .{ type_name, max_hp });
     if (std.mem.eql(u8, type_name, "app.Cp_B802Context")) {
         if (max_hp >= 1000000) {
             return "The Girl";
@@ -1445,8 +1450,8 @@ pub const SceneEnemyManagement = struct {
         copied_role_actions: []re.sdk.ManagedObject,
         new_spawn_context_id: re.sdk.ManagedObject,
     }) = .empty,
-    arena: std.heap.ArenaAllocator,
     current_scene_name: ?[:0]const u8 = null,
+    arena: std.heap.ArenaAllocator,
 
     spawn_queue: std.Deque(struct { EnemySpawnParamDetails, EnemySpawnParams }) = .empty,
     mutex: std.Io.Mutex = .init,
@@ -1462,7 +1467,7 @@ pub const SceneEnemyManagement = struct {
 
         const SceneT = try g.interop_cache.resolve("via.Scene", g.tdb, .fo(g.sdk));
 
-        const scene_manager = g.SceneManagerT.scoped(&scope).instanced(g.scene_manager);
+        const scene_manager = g.sceneManager(&scope);
         const current_scene = try scene_manager.call("get_CurrentScene", re.sdk.ManagedObject, .fo(g.sdk), .{});
         log.debug("Current scene: {*}", .{current_scene.raw});
         const current_scene_name_sys_str = try SceneT.scoped(&scope).call(
@@ -1672,6 +1677,7 @@ pub const SceneEnemyManagement = struct {
         copy.addRef(.fo(g.sdk));
         // this Id what's lets us spawn multiple enemies with the same spawn params...
         try EnemySpawnParamBaseT.scoped(scope).set(copy, ._SpawnID, .fo(g.sdk), new_spawn_id);
+        try EnemySpawnParamBaseT.scoped(scope).call(copy, "set_InheritRawContextID(System.Guid)", void, .fo(g.sdk), .{new_spawn_id});
 
         const spawn_data_orig = try EnemySpawnParamBaseT.scoped(scope).call(
             copy,
@@ -1817,13 +1823,13 @@ pub const SceneEnemyManagement = struct {
             try copied_role_actions.append(arena, copied_role_action);
         }
 
-        // try EnemySpawnParamBaseT.scoped(scope).call(
-        //     copy,
-        //     "setupSpawnData(app.CharacterSpawnData)",
-        //     void,
-        //     .fo(g.sdk),
-        //     .{copied_spawn_data},
-        // );
+        try EnemySpawnParamBaseT.scoped(scope).call(
+            copy,
+            "setupSpawnData(app.CharacterSpawnData)",
+            void,
+            .fo(g.sdk),
+            .{copied_spawn_data},
+        );
         // this and on the spawn data needs to be set
         try EnemySpawnParamBaseT.scoped(scope).set(
             copy,
@@ -1835,10 +1841,12 @@ pub const SceneEnemyManagement = struct {
         try EnemySpawnParamBaseT.scoped(scope).call(copy, "awake()", void, .fo(g.sdk), .{});
 
         errdefer log.err("requestSpawn failed", .{});
-        //try EnemySpawnParamBaseT.scoped(scope).call(copy, "requestSpawn()", void, .fo(g.sdk), .{});
-        try EnemySpawnParamBaseT.scoped(scope).call(copy, "requestRestoreSpawn()", void, .fo(g.sdk), .{});
         try EnemySpawnParamBaseT.scoped(scope).call(copy, "readySpawn(System.Boolean)", void, .fo(g.sdk), .{true});
-        try EnemySpawnParamBaseT.scoped(scope).call(copy, "permitSpawn(System.Boolean)", void, .fo(g.sdk), .{true});
+        try EnemySpawnParamBaseT.scoped(scope).call(copy, "executeSpawn()", void, .fo(g.sdk), .{});
+        //try EnemySpawnParamBaseT.scoped(scope).call(copy, "requestSpawn()", void, .fo(g.sdk), .{});
+        //try EnemySpawnParamBaseT.scoped(scope).call(copy, "requestRestoreSpawn()", void, .fo(g.sdk), .{});
+        //try EnemySpawnParamBaseT.scoped(scope).call(copy, "readySpawn(System.Boolean)", void, .fo(g.sdk), .{true});
+        //try EnemySpawnParamBaseT.scoped(scope).call(copy, "permitSpawn(System.Boolean)", void, .fo(g.sdk), .{true});
 
         try self.spawned_enemies.append(arena, .{
             .copied_base = copy,
@@ -2065,28 +2073,37 @@ pub fn test1() !void {
     var scope = g.interop_cache.newScope(g.allocator);
     defer scope.deinit();
 
-    const enemy = g.scene_enemy_management.enemies.items[0];
-    log.info("Spawning enemy: {s}", .{enemy.enemy_type_name});
-    var role_actions = [_]EnemyRoleAction{
-        .{
-            .index = 0,
-            .resume_point = .{ 4.184, 2.277, 37.947 },
-            .resume_yaw = -90.0,
-            .return_point = .{ -2.417, 2.277, 36.349 },
-            .return_yaw = -270.0,
-        },
-        .{
-            .index = 1,
-            .resume_point = .{ 4.184, 2.277, 37.947 },
-            .resume_yaw = -90.0,
-            .return_point = .{ -2.417, 2.277, 36.349 },
-            .return_yaw = -270.0,
-        },
-    };
-    try g.scene_enemy_management.spawn(&scope, enemy, .{
-        .position = .{ 4.184, 2.277, 37.947 },
-        .role_actions = &role_actions,
-    });
+    const arena = scope.arena.allocator();
+
+    const SceneT = try g.interop_cache.resolve("via.Scene", g.tdb, .fo(g.sdk));
+    const enemy_spawn_param_base_type = re.sdk.typeof(.fo(g.sdk), "app.EnemySpawnParamBase") orelse
+        return error.EnemySpawnParamBaseNotFound;
+
+    const scene_mgr = g.sceneManager(&scope);
+    const scenes = try scene_mgr.call("get_Scenes()", interop.SystemArray, .fo(g.sdk), .{});
+    const scenes_len = try scenes.getLength(&scope, .fo(g.sdk));
+    log.info("Scenes length: {}", .{scenes_len});
+    for (0..@intCast(scenes_len)) |i| {
+        const scene = (try scenes.getValue(i, &scope, .fo(g.sdk)) orelse return);
+
+        const scene_name_sys_str = try SceneT.scoped(&scope).call(
+            scene,
+            "get_Name()",
+            interop.SystemStringView,
+            .fo(g.sdk),
+            .{},
+        );
+        const scene_name = try std.unicode.utf16LeToUtf8AllocZ(arena, scene_name_sys_str.data);
+        const components = try SceneT.scoped(&scope).call(
+            scene,
+            "findComponents(System.Type)",
+            interop.SystemArray,
+            .fo(g.sdk),
+            .{enemy_spawn_param_base_type},
+        );
+        const len = try components.getLength(&scope, .fo(g.sdk));
+        log.info("Scene {s} has {} enemy spawn params", .{ scene_name, len });
+    }
 }
 
 pub fn test2() !void {
@@ -2150,29 +2167,6 @@ pub fn test2() !void {
 
     for (0..@intCast(len)) |i| {
         const enemy_spawn_param_base_orig = (try enemy_base_components.getValue(i, &scope, .fo(g.sdk))) orelse continue;
-        const enemy_spawn_param_base = try scope.callMethod(enemy_spawn_param_base_orig, "MemberwiseClone()", re.sdk.ManagedObject, .fo(g.sdk), .{});
-        enemy_spawn_param_base.addRef(.fo(g.sdk));
-
-        const orig_spawn_id = try scope.callMethod(enemy_spawn_param_base, "get_SpawnID()", interop.ValueType, .fo(g.sdk), .{});
-        log.debug("orig_spawn_id: {any}", .{orig_spawn_id.data});
-
-        try scope.setField(enemy_spawn_param_base, "_SpawnID", .fo(g.sdk), new_spawn_id);
-        const spawn_id = try scope.callMethod(enemy_spawn_param_base, "get_SpawnID()", interop.ValueType, .fo(g.sdk), .{});
-        log.debug("spawn_id: {any}", .{spawn_id.data});
-
-        const component: *interop.ViaComponent = @ptrCast(enemy_spawn_param_base.raw);
-
-        const game_obj = try GameObject.init(&g.interop_cache, .fo(g.sdk), component.getOwner());
-        log.debug("owner: 0x{x}", .{@intFromPtr(game_obj.managed.raw)});
-        // component.setOwner(null);
-
-        const game_obj_name_sys_str = try game_obj.call(.get_Name, &scope, .fo(g.sdk), .{});
-        const game_obj_name = try std.unicode.utf16LeToUtf8AllocZ(arena, game_obj_name_sys_str.data);
-
-        const folder = try game_obj.call(.get_FolderSelf, &scope, .fo(g.sdk), .{});
-        const folder_path_str = try FolderT.scoped(&scope).call(folder, "get_Path()", interop.SystemStringView, .fo(g.sdk), .{});
-        const folder_path = try std.unicode.utf16LeToUtf8AllocZ(arena, folder_path_str.data);
-
         const context_id = try scope.callMethod(
             enemy_spawn_param_base_orig,
             "get_ManagedContextID()",
@@ -2205,6 +2199,29 @@ pub fn test2() !void {
         } else {
             continue;
         }
+
+        const enemy_spawn_param_base = try scope.callMethod(enemy_spawn_param_base_orig, "MemberwiseClone()", re.sdk.ManagedObject, .fo(g.sdk), .{});
+        enemy_spawn_param_base.addRef(.fo(g.sdk));
+
+        const orig_spawn_id = try scope.callMethod(enemy_spawn_param_base, "get_SpawnID()", interop.ValueType, .fo(g.sdk), .{});
+        log.debug("orig_spawn_id: {any}", .{orig_spawn_id.data});
+
+        try scope.setField(enemy_spawn_param_base, "_SpawnID", .fo(g.sdk), new_spawn_id);
+        const spawn_id = try scope.callMethod(enemy_spawn_param_base, "get_SpawnID()", interop.ValueType, .fo(g.sdk), .{});
+        log.debug("spawn_id: {any}", .{spawn_id.data});
+
+        const component: *interop.ViaComponent = @ptrCast(enemy_spawn_param_base.raw);
+
+        const game_obj = try GameObject.init(&g.interop_cache, .fo(g.sdk), component.getOwner());
+        log.debug("owner: 0x{x}", .{@intFromPtr(game_obj.managed.raw)});
+        // component.setOwner(null);
+
+        const game_obj_name_sys_str = try game_obj.call(.get_Name, &scope, .fo(g.sdk), .{});
+        const game_obj_name = try std.unicode.utf16LeToUtf8AllocZ(arena, game_obj_name_sys_str.data);
+
+        const folder = try game_obj.call(.get_FolderSelf, &scope, .fo(g.sdk), .{});
+        const folder_path_str = try FolderT.scoped(&scope).call(folder, "get_Path()", interop.SystemStringView, .fo(g.sdk), .{});
+        const folder_path = try std.unicode.utf16LeToUtf8AllocZ(arena, folder_path_str.data);
 
         // const game_obj_new = try GameObjectT.scoped(&scope).callStaticMethod(
         //     "create(System.String, via.Folder)",
@@ -2694,6 +2711,22 @@ fn installHooks() !void {
         }.func,
         false,
     );
+
+    const onDestroy = (try tdbGetMethod(g.tdb, "app.dev1lab.AnalysisLogManager", "onDestroy()")) orelse {
+        log.warn("Failed to get onDestroy method for app.dev1lab.AnalysisLogManager", .{});
+        return;
+    };
+    _ = onDestroy.handle.addHook(
+        .fo(g.sdk.safe().functions),
+        null,
+        struct {
+            fn func(_: ?*?*anyopaque, _: re.sdk.TypeDefinition, _: u64) void {
+                log.debug("Exiting...", .{});
+                g.detach();
+            }
+        }.func,
+        false,
+    );
 }
 
 fn init(api: re.Api) !void {
@@ -2714,12 +2747,6 @@ fn init(api: re.Api) !void {
 
 fn onUpdate() void {}
 
-fn onDeviceReset() void {
-    log.info("Device reset detected, clearing interop cache", .{});
-
-    g.reset();
-}
-
 comptime {
     re.initPlugin(init, .{
         .requiredVersion = .{
@@ -2728,7 +2755,6 @@ comptime {
         // .onPreApplicationEntry = &.{
         //     .{ "UpdateBehavior", onUpdate },
         // },
-        .onDeviceReset = onDeviceReset,
         .onImGuiDrawUI = struct {
             fn func(data: *re.API_C.REFImGuiFrameCbData) void {
                 ui.draw(data) catch |e| {
@@ -2754,7 +2780,9 @@ pub export fn DllMain(
         win32.system.system_services.DLL_PROCESS_ATTACH => {
             g.attach();
         },
-        win32.system.system_services.DLL_PROCESS_DETACH => {},
+        win32.system.system_services.DLL_PROCESS_DETACH => {
+            g.detach();
+        },
         else => {},
     }
 

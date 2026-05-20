@@ -37,7 +37,7 @@ const g = struct {
         io = threaded.io();
     }
 
-    fn reset() void {
+    fn detach() void {
         threaded.deinit();
         _ = debug_allocator.detectLeaks();
         _ = debug_allocator.deinit();
@@ -279,7 +279,7 @@ fn onDeviceReset() void {
         else => {},
     }
 
-    g.reset();
+    g.detach();
 }
 
 comptime {

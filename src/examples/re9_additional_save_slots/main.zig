@@ -42,7 +42,7 @@ const g = struct {
         interop_cache = .init(debug_allocator.allocator(), io);
     }
 
-    fn reset() void {
+    fn detach() void {
         interop_cache.deinit();
 
         threaded.deinit();
@@ -403,11 +403,6 @@ comptime {
         .onPreApplicationEntry = &.{
             .{ "UpdateBehavior", onUpdate },
         },
-        .onDeviceReset = struct {
-            fn func() void {
-                g.reset();
-            }
-        }.func,
     });
 }
 
@@ -427,7 +422,7 @@ pub export fn DllMain(
             g.attach();
         },
         DLL_PROCESS_DETACH => {
-            g.reset();
+            g.detach();
         },
         else => {},
     }
