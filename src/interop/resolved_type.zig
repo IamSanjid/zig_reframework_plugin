@@ -175,104 +175,6 @@ pub fn ResolvedType(comptime full_type_name: [:0]const u8) type {
             };
         }
 
-        // (Ab)using Zig's type memoization to cache metadata.
-        pub fn Method(
-            comptime sig: [:0]const u8,
-            comptime param_interops: anytype,
-            comptime RetType: type,
-            comptime rInterop: ?ToZigInterop(RetType),
-            comptime static: bool,
-        ) type {
-            return struct {
-                const _sig = sig;
-                const _param_interops = param_interops;
-                const _RetType = RetType;
-                const _rInterop = rInterop;
-                const _static = static;
-
-                var cached_metadata: std.atomic.Value(?*MethodMetadata) = .init(null);
-
-                const MethodT = @This();
-
-                fn getMetadata(
-                    cache: *ManagedTypeCache,
-                    type_def_metadata: *TypeDefMetadata,
-                    sdk: api.VerifiedSdk(.{
-                        .method = MethodMetadata.method_specs,
-                        .type_definition = .all,
-                    }),
-                ) !*MethodMetadata {
-                    return if (MethodT.cached_metadata.load(.acquire)) |metadata| blk: {
-                        break :blk metadata;
-                    } else blk: {
-                        try cache.lock();
-                        defer cache.unlock();
-                        const method_metadata = try managed_type_cache.getOrCacheMethodMetadataTo(
-                            cache,
-                            type_def_metadata,
-                            MethodT._sig,
-                            .fo(sdk),
-                        );
-
-                        // We're not creating any new metadata here just storing the "reference" to already existing one
-                        // so no need for cache arena.
-                        MethodT.cached_metadata.store(method_metadata, .release);
-                        break :blk method_metadata;
-                    };
-                }
-            };
-        }
-
-        pub fn Field(
-            comptime field_name: [:0]const u8,
-            comptime static: bool,
-        ) type {
-            return struct {
-                const _field_name = field_name;
-                const _static = static;
-
-                field_metadata: *FieldMetadata,
-                is_passed_type_valtype: bool,
-
-                const FieldT = @This();
-
-                var cached_metadata: std.atomic.Value(?*FieldT) = .init(null);
-
-                fn getMetadata(
-                    cache: *ManagedTypeCache,
-                    type_def_metadata: *TypeDefMetadata,
-                    sdk: api.VerifiedSdk(.{
-                        .field = FieldMetadata.field_specs,
-                        .type_definition = .all,
-                    }),
-                ) !struct { *FieldMetadata, bool } {
-                    return if (FieldT.cached_metadata.load(.acquire)) |metadata| blk: {
-                        break :blk .{ metadata.field_metadata, metadata.is_passed_type_valtype };
-                    } else blk: {
-                        try cache.lock();
-                        defer cache.unlock();
-                        const field_metadata = try managed_type_cache.getOrCacheFieldMetadataTo(
-                            cache,
-                            type_def_metadata,
-                            FieldT._field_name,
-                            .fo(sdk),
-                        );
-
-                        const is_passed_type_valtype = type_def_metadata.def.getVmObjType(.fo(sdk)) == .valtype;
-
-                        // We use the cache arena, we want this to live as long as the cache itself.
-                        const static_storage = try cache.cache_arena.allocator().create(FieldT);
-                        static_storage.* = .{
-                            .field_metadata = field_metadata,
-                            .is_passed_type_valtype = is_passed_type_valtype,
-                        };
-                        FieldT.cached_metadata.store(static_storage, .release);
-                        break :blk .{ field_metadata, is_passed_type_valtype };
-                    };
-                }
-            };
-        }
-
         pub fn Instanced(ObjT: type) type {
             return struct {
                 instance: ObjT,
@@ -395,7 +297,7 @@ pub fn ResolvedType(comptime full_type_name: [:0]const u8) type {
                 }),
                 args: anytype,
             ) !RetType {
-                const Static = Method(sig, param_interops, RetType, rInterop, static);
+                const Static = Method(full_type_name, sig, param_interops, RetType, rInterop, static);
                 const method_metadata = try Static.getMetadata(self.scope.cache, self.type_def_metadata, .fo(sdk));
 
                 errdefer self.scope.cache.appendDiagnostics("[resolved_type.scoped.call]method={s}", .{sig}) catch {};
@@ -496,7 +398,7 @@ pub fn ResolvedType(comptime full_type_name: [:0]const u8) type {
                     .tdb = tdb_specs,
                 }),
             ) !T {
-                const Static = Field(@tagName(field), static);
+                const Static = Field(full_type_name, @tagName(field), static);
                 const field_metadata, const is_passed_type_valtype = try Static.getMetadata(self.scope.cache, self.type_def_metadata, .fo(sdk));
 
                 errdefer self.scope.cache.appendDiagnostics("[resolved_type.scoped.get]field={s}", .{@tagName(field)}) catch {};
@@ -585,7 +487,7 @@ pub fn ResolvedType(comptime full_type_name: [:0]const u8) type {
                 }),
                 value: anytype,
             ) !void {
-                const Static = Field(@tagName(field), static);
+                const Static = Field(full_type_name, @tagName(field), static);
                 const field_metadata, const is_passed_type_valtype = try Static.getMetadata(self.scope.cache, self.type_def_metadata, .fo(sdk));
 
                 errdefer self.scope.cache.appendDiagnostics("[resolved_type.scoped.set]field={s}", .{@tagName(field)}) catch {};
@@ -661,5 +563,107 @@ pub fn ResolvedType(comptime full_type_name: [:0]const u8) type {
                 return self.setFieldWithInteropImpl(null, field, interop, true, .fo(sdk), value);
             }
         };
+    };
+}
+
+// (Ab)using Zig's type memoization to cache metadata.
+pub fn Method(
+    comptime type_name: [:0]const u8, // important to instantiate per-type method metadata
+    comptime sig: [:0]const u8,
+    comptime param_interops: anytype,
+    comptime RetType: type,
+    comptime rInterop: ?ToZigInterop(RetType),
+    comptime static: bool,
+) type {
+    return struct {
+        const _type_name = type_name;
+        const _sig = sig;
+        const _param_interops = param_interops;
+        const _RetType = RetType;
+        const _rInterop = rInterop;
+        const _static = static;
+
+        var cached_metadata: std.atomic.Value(?*MethodMetadata) = .init(null);
+
+        const MethodT = @This();
+
+        fn getMetadata(
+            cache: *ManagedTypeCache,
+            type_def_metadata: *TypeDefMetadata,
+            sdk: api.VerifiedSdk(.{
+                .method = MethodMetadata.method_specs,
+                .type_definition = .all,
+            }),
+        ) !*MethodMetadata {
+            return if (MethodT.cached_metadata.load(.acquire)) |metadata| blk: {
+                break :blk metadata;
+            } else blk: {
+                try cache.lock();
+                defer cache.unlock();
+                const method_metadata = try managed_type_cache.getOrCacheMethodMetadataTo(
+                    cache,
+                    type_def_metadata,
+                    MethodT._sig,
+                    .fo(sdk),
+                );
+
+                // We're not creating any new metadata here just storing the "reference" to already existing one
+                // so no need for cache arena.
+                MethodT.cached_metadata.store(method_metadata, .release);
+                break :blk method_metadata;
+            };
+        }
+    };
+}
+
+pub fn Field(
+    comptime type_name: [:0]const u8, // important to instantiate per-type field metadata
+    comptime field_name: [:0]const u8,
+    comptime static: bool,
+) type {
+    return struct {
+        const _type_name = type_name;
+        const _field_name = field_name;
+        const _static = static;
+
+        field_metadata: *FieldMetadata,
+        is_passed_type_valtype: bool,
+
+        const FieldT = @This();
+
+        var cached_metadata: std.atomic.Value(?*FieldT) = .init(null);
+
+        fn getMetadata(
+            cache: *ManagedTypeCache,
+            type_def_metadata: *TypeDefMetadata,
+            sdk: api.VerifiedSdk(.{
+                .field = FieldMetadata.field_specs,
+                .type_definition = .all,
+            }),
+        ) !struct { *FieldMetadata, bool } {
+            return if (FieldT.cached_metadata.load(.acquire)) |metadata| blk: {
+                break :blk .{ metadata.field_metadata, metadata.is_passed_type_valtype };
+            } else blk: {
+                try cache.lock();
+                defer cache.unlock();
+                const field_metadata = try managed_type_cache.getOrCacheFieldMetadataTo(
+                    cache,
+                    type_def_metadata,
+                    FieldT._field_name,
+                    .fo(sdk),
+                );
+
+                const is_passed_type_valtype = type_def_metadata.def.getVmObjType(.fo(sdk)) == .valtype;
+
+                // We use the cache arena, we want this to live as long as the cache itself.
+                const static_storage = try cache.cache_arena.allocator().create(FieldT);
+                static_storage.* = .{
+                    .field_metadata = field_metadata,
+                    .is_passed_type_valtype = is_passed_type_valtype,
+                };
+                FieldT.cached_metadata.store(static_storage, .release);
+                break :blk .{ field_metadata, is_passed_type_valtype };
+            };
+        }
     };
 }
